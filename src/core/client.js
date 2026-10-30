@@ -12,9 +12,11 @@ const {
   decodeProtoFields,
   NoiseFrameDecoder
 } = require('./proto');
-const { extractWss, extractCookie, getWssExpiry, buildHybrid } = require('./credentials');
+const { extractWss, extractCookie, getWssExpiry, buildHybrid, normalizeProxy } = require('./credentials');
 
 const DEFAULT_COOKIES = process.env.MUSE_COOKIES || '';
+// vm_state values from GET /api/session for a VM that must be resumed before connecting.
+const SLEEPING_VM_STATES = new Set(['SUSPENDED', 'STOPPED', 'HIBERNATED', 'PAUSED']);
 
 /**
  * Merge Set-Cookie headers into an existing "a=1; b=2" cookie string.
@@ -183,7 +185,7 @@ class MuseClient extends EventEmitter {
     super();
     this.wsUrl = options.wsUrl || null;
     this.cookies = options.cookies || DEFAULT_COOKIES;
-    this.proxy = options.proxy || process.env.MUSE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null;
+    this.proxy = normalizeProxy(options.proxy || process.env.MUSE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null);
     this.ws = null;
     this.sendCipher = null;
     this.recvCipher = null;
@@ -334,6 +336,16 @@ class MuseClient extends EventEmitter {
           const vmId = sessionData.vm_id || sessionData.vm_name || (sessionData.vms && sessionData.vms[0] && (sessionData.vms[0].vm_id || sessionData.vms[0].id));
           const endpointUrl = sessionData.endpoint_url || (sessionData.vms && sessionData.vms[0] && sessionData.vms[0].endpoint_url) || (vmId ? `wss://${vmId}.metaaivm.com/` : null);
 
+          // Meta suspends idle VMs. A token for a suspended VM is still issued, but the
+          // WSS handshake then fails with HTTP 502, so stop here and let the caller
+          // wake the VM (fetchWssFromCookie falls back to Chromium, which resumes it).
+          const vmState = String(sessionData.vm_state || (sessionData.vms && sessionData.vms[0] && sessionData.vms[0].vm_state) || '').toUpperCase();
+          if (SLEEPING_VM_STATES.has(vmState)) {
+            const err = new Error(`The upstream VM is ${vmState}. Open muse.ai with this account (or let the server use Chromium) to resume it.`);
+            err.code = 'MUSE_VM_SUSPENDED';
+            throw err;
+          }
+
           if (vmId && endpointUrl) {
             console.log(`[Bootstrap] Meta assigned live VM ${vmId}. Requesting hatch token...`);
             let tokenRes = null;
@@ -375,7 +387,7 @@ class MuseClient extends EventEmitter {
           lastApiError = new Error(`GET /api/session responded with HTTP ${sessionRes.status}`);
         }
       } catch (apiErr) {
-        if (apiErr.code === 'MUSE_AUTH_EXPIRED') {
+        if (apiErr.code === 'MUSE_AUTH_EXPIRED' || apiErr.code === 'MUSE_VM_SUSPENDED') {
           throw apiErr;
         }
         lastApiError = apiErr;
@@ -1878,6 +1890,7 @@ async function fetchWssFromCookie(cookieString, proxy = null, options = {}) {
   if (!clean.includes('hatch_sess=')) {
     throw new Error('Invalid cookie: it must contain hatch_sess=... (upstream login session).');
   }
+  proxy = normalizeProxy(proxy);
 
   const { extractWssViaChromium, detectChromium } = require('./browser');
   const hasChromium = Boolean(detectChromium());

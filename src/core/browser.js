@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execSync } = require('node:child_process');
-const { getWssExpiry, buildHybrid, extractCookie } = require('./credentials');
+const { getWssExpiry, buildHybrid, extractCookie, normalizeProxy } = require('./credentials');
 
 // Polyfill Web Streams API for Node.js < 18 (e.g. Node 16) where ReadableStream is not global
 try {
@@ -287,6 +287,7 @@ function serializeCookies(cookieList = []) {
  * @returns {Promise<{ success: boolean, wsUrl: string, expiry: number|null, vmId: string|null, refreshedCookies: string, hybrid: string, extractedVia: string }>}
  */
 async function extractWssViaChromium(cookieString, options = {}) {
+  options = { ...options, proxy: normalizeProxy(options.proxy) };
   const clean = extractCookie(cookieString) || cookieString;
   if (!clean || typeof clean !== 'string' || !clean.includes('hatch_sess=')) {
     throw new Error('Invalid cookie: it must contain hatch_sess=... (upstream login session).');

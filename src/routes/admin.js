@@ -31,7 +31,7 @@ const config = require('../config');
 const { Account, ApiKey, Job, SCOPES, ACCOUNT_STATUSES } = require('../models');
 const { pool } = require('../services/pool');
 const { dispatcher } = require('../services/dispatcher');
-const { composeCredentialAsync, describeCredential } = require('../core/credentials');
+const { composeCredentialAsync, describeCredential, normalizeProxy } = require('../core/credentials');
 const { requireAdmin, invalidateApiKeyCache } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { methodNotAllowed } = require('../middleware/errorHandler');
@@ -55,7 +55,13 @@ const concurrencySchema = z.object({
   image: z.number().int().min(1).max(2000).nullable().optional(),
   video: z.number().int().min(1).max(2000).nullable().optional()
 }).strict();
-const proxySchema = z.string().max(2048).regex(/^(https?|socks5?):\/\//i, 'Proxy must be an http(s):// or socks5:// URL').nullable();
+// Accepts URLs and "host:port:user:pass" / "user:pass@host:port" / "host:port", stored as a URL.
+const proxySchema = z
+  .string()
+  .max(2048)
+  .transform((v) => normalizeProxy(v))
+  .refine((v) => v === null || /^(https?|socks5?):\/\//i.test(v), 'Proxy must be a URL (http://, socks5://) or host:port[:user:pass]')
+  .nullable();
 
 const accountFields = {
   name: z.string().trim().min(1).max(100),

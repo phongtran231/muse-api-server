@@ -182,6 +182,19 @@ test('refs: reference images are sent upstream in order and numbered in the prom
   assert.deepEqual([...payload.items.map((it) => it.type === 'image' ? it.data_base64 : it.type)], ['aaa', 'bbb', 'ccc', 'text']);
 });
 
+test('bootstrap refuses a suspended VM instead of issuing a WSS URL that fails with 502', async () => {
+  let tokenRequests = 0;
+  const axios = {
+    get: async () => ({ status: 200, headers: {}, data: { status: 'assigned', vm_id: A, endpoint_url: `wss://${A}.metaaivm.com/`, vm_state: 'SUSPENDED' } }),
+    post: async () => { tokenRequests += 1; return { status: 200, headers: {}, data: { token: 't' } }; }
+  };
+  const { MuseClient } = isolated('src/core/client.js', { axios });
+  const c = new MuseClient({ cookies: 'hatch_sess=x' });
+  c.forceRefresh = true;
+  await assert.rejects(c.bootstrap(), (err) => err.code === 'MUSE_VM_SUSPENDED');
+  assert.equal(tokenRequests, 0);
+});
+
 test('downloads reject overflow, allow exact EOF, and clean sessions on download failure', async () => {
   const c = client();
   c.sendRequest = async () => ({ status: 200, body: JSON.stringify({ ok: true, result: { data_base64: Buffer.alloc(8).toString('base64'), eof: false, len: 8 } }) });
@@ -626,4 +639,15 @@ test('NoiseFrameDecoder evicts stale or excessive partial frames and serializeAc
     { status: 'degraded', connected: false, is_renewing: true, active: { chat: 0, image: 0, video: 0 }, limits: { chat: 4, image: 2, video: 1 }, consecutive_failures: 1, cooldown_until: null }
   );
   assert.equal(serialized.live.is_renewing, true);
+});
+
+test('proxy values in provider format are normalized to proxy URLs', () => {
+  const { normalizeProxy } = require('../src/core/credentials');
+  assert.equal(normalizeProxy('1.2.3.4:8080:user:pass'), 'http://user:pass@1.2.3.4:8080');
+  assert.equal(normalizeProxy('user:pass@1.2.3.4:8080'), 'http://user:pass@1.2.3.4:8080');
+  assert.equal(normalizeProxy('1.2.3.4:8080'), 'http://1.2.3.4:8080');
+  assert.equal(normalizeProxy('socks5://1.2.3.4:1080'), 'socks5://1.2.3.4:1080');
+  assert.equal(normalizeProxy('  '), null);
+  assert.equal(normalizeProxy(null), null);
+  assert.doesNotThrow(() => new URL(normalizeProxy('1.2.3.4:8080:user:p@ss')));
 });

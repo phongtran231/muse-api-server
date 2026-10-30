@@ -181,7 +181,29 @@ async function composeCredentialAsync(params = {}, existing = '') {
   return comp;
 }
 
+/**
+ * Normalizes a proxy value to a URL usable by https-proxy-agent and Chromium.
+ * Accepts full URLs (http://, https://, socks5://) and the common provider
+ * formats "host:port:user:pass", "user:pass@host:port" and "host:port"
+ * (all treated as HTTP proxies). Returns null for empty input.
+ */
+function normalizeProxy(value) {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^(https?|socks[45]?h?):\/\//i.test(raw)) return raw;
+  if (raw.includes('@')) return `http://${raw}`;
+  const parts = raw.split(':');
+  if (parts.length === 2) return `http://${raw}`;
+  if (parts.length >= 4) {
+    const [host, port, user, ...pass] = parts;
+    return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass.join(':'))}@${host}:${port}`;
+  }
+  return raw;
+}
+
 module.exports = {
+  normalizeProxy,
   extractWss,
   extractCookie,
   getWssExpiry,

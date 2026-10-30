@@ -14,7 +14,7 @@ const { pool } = require('../services/pool');
 const { dispatcher } = require('../services/dispatcher');
 const chat = require('../services/chat');
 const storage = require('../services/storage');
-const { composeCredentialAsync, describeCredential } = require('../core/credentials');
+const { composeCredentialAsync, describeCredential, normalizeProxy } = require('../core/credentials');
 const { createAdminSession, parseCookies } = require('../utils/adminSession');
 const { safeEqual, generateApiKey, sha256 } = require('../utils/crypto');
 const { requireDashboardAuth } = require('../middleware/dashboardAuth');
@@ -348,7 +348,7 @@ router.post('/api/accounts', async (req, res, next) => {
         wss_url: body.wss_url,
         cookie: body.cookie,
         cookie_string: body.credential,
-        proxy: body.proxy || null,
+        proxy: normalizeProxy(body.proxy),
         preferBrowser: Boolean(body.use_browser)
       }
     );
@@ -364,7 +364,7 @@ router.post('/api/accounts', async (req, res, next) => {
       credential: result.value,
       credential_type: info.type,
       wss_expires_at: info.wss_expires_at ? new Date(info.wss_expires_at) : null,
-      proxy: body.proxy || null,
+      proxy: normalizeProxy(body.proxy),
       group,
       enabled: body.enabled !== false,
       capabilities: {
@@ -424,7 +424,7 @@ router.patch('/api/accounts/:id', async (req, res, next) => {
     const body = req.body || {};
     if (body.name !== undefined) doc.name = String(body.name).trim();
     if (body.enabled !== undefined) doc.enabled = Boolean(body.enabled);
-    if (body.proxy !== undefined) doc.proxy = body.proxy || null;
+    if (body.proxy !== undefined) doc.proxy = normalizeProxy(body.proxy);
     if (body.group !== undefined) doc.group = String(body.group).trim();
     if (body.capabilities) {
       if (body.capabilities.chat !== undefined) doc.capabilities.chat = body.capabilities.chat;
