@@ -15,7 +15,7 @@ const storage = require('../services/storage');
 const { requireScope } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { methodNotAllowed } = require('../middleware/errorHandler');
-const { z, metadataSchema, referenceSchema } = require('./helpers');
+const { z, metadataSchema, referenceSchema, refsSchema, MAX_REFS } = require('./helpers');
 const { submitGeneration } = require('./generation');
 
 const router = express.Router();
@@ -28,11 +28,16 @@ const imageRequestSchema = z.object({
   n: z.literal(1).optional().describe('Only one image per request is supported.'),
   aspect_ratio: z.enum(IMAGE_ASPECT_RATIOS).optional(),
   reference_image: referenceSchema.optional(),
+  refs: refsSchema.optional(),
   response_format: z.enum(['url', 'b64_json']).default('url'),
   async: z.boolean().default(false),
   webhook_url: z.string().max(2048).optional(),
   metadata: metadataSchema.optional()
-}).strict();
+}).strict()
+  .refine((b) => (b.reference_image ? 1 : 0) + (b.refs?.length || 0) <= MAX_REFS, {
+    message: `At most ${MAX_REFS} reference images in total (reference_image + refs)`,
+    path: ['refs']
+  });
 
 router
   .route('/generations')
@@ -42,7 +47,7 @@ router
       type: 'image',
       sync: !body.async,
       params: { aspect_ratio: body.aspect_ratio || null, response_format: body.response_format },
-      references: { image: body.reference_image },
+      references: { images: [body.reference_image, ...(body.refs || [])].filter(Boolean) },
       onSucceeded: async (job, response) => {
         const item = {
           file_id: job.output.file_id,

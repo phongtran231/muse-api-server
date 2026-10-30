@@ -56,6 +56,7 @@ function serializeJob(doc) {
     },
     reference: {
       image_file_id: doc.reference?.image_file_id || null,
+      image_file_ids: doc.reference?.image_file_ids?.length ? doc.reference.image_file_ids : (doc.reference?.image_file_id ? [doc.reference.image_file_id] : []),
       ...(doc.type === 'video' ? { video_file_id: doc.reference?.video_file_id || null } : {})
     },
     output,

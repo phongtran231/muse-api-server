@@ -159,6 +159,25 @@ function parseGatewayInit(rawInput) {
   return null;
 }
 
+/**
+ * Ordered reference images from generation/chat options: `ref_images` (refs)
+ * plus the legacy single `ref_image`, which goes first.
+ */
+function collectRefImages(options = {}) {
+  const single = options.ref_image || options.refImage || null;
+  const list = Array.isArray(options.ref_images) ? options.ref_images : (Array.isArray(options.refImages) ? options.refImages : []);
+  return [single, ...list].filter(Boolean);
+}
+
+/** Tells the model how attached images map to "[Reference Image n]" tags in the prompt. */
+function refImagesNote(count) {
+  if (count === 1) {
+    return 'One reference image is attached; it is [Reference Image 1].';
+  }
+  const order = Array.from({ length: count }, (_, i) => `image #${i + 1} is [Reference Image ${i + 1}]`).join(', ');
+  return `${count} reference images are attached in this order: ${order}. Whenever the request mentions [Reference Image n], it means the n-th attached image.`;
+}
+
 class MuseClient extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -1551,9 +1570,8 @@ class MuseClient extends EventEmitter {
 
       const items = [];
 
-      // 1. Process Reference Image if provided
-      if (options.ref_image || options.refImage) {
-        const ref = options.ref_image || options.refImage;
+      // 1. Process Reference Images in order (item n = [Reference Image n] in the prompt)
+      for (const ref of collectRefImages(options)) {
         const b64 = typeof ref === 'string'
           ? (ref.includes(';base64,') ? ref.split(';base64,')[1] : ref)
           : (ref.data_base64 || (Buffer.isBuffer(ref.buffer) ? ref.buffer.toString('base64') : ''));
@@ -1631,15 +1649,15 @@ class MuseClient extends EventEmitter {
   async generateImage(prompt, options = {}) {
     const onProgress = options.onProgress;
     const download = options.download !== false; // default true
-    const refImage = options.ref_image || options.refImage || null;
+    const refImages = collectRefImages(options);
     const refVideo = options.ref_video || options.refVideo || null;
 
     const aspectRatio = options.aspect_ratio || options.aspectRatio;
     const ratioHint = aspectRatio ? ` (aspect ratio ${aspectRatio})` : '';
 
     let formattedPrompt = `Generate an image: ${prompt}${ratioHint}`;
-    if (refImage) {
-      formattedPrompt = `Using the attached reference image, generate a new image that follows this request: ${prompt}${ratioHint}`;
+    if (refImages.length) {
+      formattedPrompt = `${refImagesNote(refImages.length)} Use them as visual references: keep the identity, appearance and details of the people, products and objects they show. Generate a new image that follows this request: ${prompt}${ratioHint}`;
     } else if (refVideo) {
       formattedPrompt = `Using the attached reference video, generate a new image that follows this request: ${prompt}${ratioHint}`;
     }
@@ -1647,7 +1665,7 @@ class MuseClient extends EventEmitter {
     const chatResult = await this.chat(formattedPrompt, {
       sessionId: null,
       new_session: true,
-      ref_image: refImage,
+      ref_images: refImages,
       ref_video: refVideo,
       timeout: options.timeout || 180000,
       waitForKind: 'image',
@@ -1704,14 +1722,14 @@ class MuseClient extends EventEmitter {
   async generateVideo(prompt, options = {}) {
     const onProgress = options.onProgress;
     const download = options.download !== false; // default true
-    const refImage = options.ref_image || options.refImage || null;
+    const refImages = collectRefImages(options);
     const refVideo = options.ref_video || options.refVideo || null;
     const aspectRatio = options.aspect_ratio || options.aspectRatio || '16:9';
     const duration = parseInt(options.duration, 10) || 5;
 
     let formattedPrompt = `Create a high quality motion video based on this prompt: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
-    if (refImage) {
-      formattedPrompt = `Based on the attached reference image (Image-to-Video), create a smooth motion video: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s.`;
+    if (refImages.length) {
+      formattedPrompt = `${refImagesNote(refImages.length)} Use them as visual references: the people, products and objects in the video must look exactly like in these images. Create a smooth, high quality motion video: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
     } else if (refVideo) {
       formattedPrompt = `Based on the attached reference video (Video-to-Video), regenerate a motion video with dynamic effects: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s.`;
     }
@@ -1719,7 +1737,7 @@ class MuseClient extends EventEmitter {
     const chatResult = await this.chat(formattedPrompt, {
       sessionId: null,
       new_session: true,
-      ref_image: refImage,
+      ref_images: refImages,
       ref_video: refVideo,
       timeout: options.timeout || 180000,
       waitForKind: 'video',

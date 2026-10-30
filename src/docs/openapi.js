@@ -44,7 +44,7 @@ the \`admin\` scope.
 * Every response includes an \`X-Request-Id\` header; include it when contacting support.
 
 ## Reference media
-Wherever a reference is accepted (\`reference_image\`, \`reference_video\`,
+Wherever a reference is accepted (\`reference_image\`, \`reference_video\`, each item of \`refs\`,
 \`image_url.url\`, \`video_url.url\`) you may pass:
 1. a file ID from \`POST /v1/files\` (recommended for large media),
 2. a public \`https://\` URL, or
@@ -52,6 +52,12 @@ Wherever a reference is accepted (\`reference_image\`, \`reference_video\`,
 
 Limits: images up to ${Math.round(config.storage.maxImageBytes / 1048576)} MB (JPEG, PNG, WEBP, GIF),
 videos up to ${Math.round(config.storage.maxVideoBytes / 1048576)} MB (MP4, MOV, WEBM).
+
+### Multiple reference images (\`refs\`)
+Image and video generation accept \`refs\`: an ordered array of up to 10 reference images
+(\`reference_image\`, if also sent, counts as the first one). The n-th image is
+\`[Reference Image n]\`, so the prompt can say e.g. "the woman in [Reference Image 1] holds the
+bottle from [Reference Image 2]". \`refs\` cannot be combined with \`reference_video\`.
 
 ## Synchronous vs asynchronous generation
 * **Images** are synchronous by default. If generation exceeds the server wait
@@ -458,6 +464,7 @@ function buildOpenApiSpec() {
             n: { type: 'integer', const: 1 },
             aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'] },
             reference_image: ref('Reference'),
+            refs: { type: 'array', items: ref('Reference'), minItems: 1, maxItems: 10, description: 'Ordered reference images; item n is [Reference Image n] in the prompt.' },
             response_format: { type: 'string', enum: ['url', 'b64_json'], default: 'url' },
             async: { type: 'boolean', default: false },
             webhook_url: { type: 'string', format: 'uri' },
@@ -486,6 +493,7 @@ function buildOpenApiSpec() {
             duration: { type: 'integer', minimum: 3, maximum: 10, default: 5, description: 'Seconds.' },
             reference_image: ref('Reference'),
             reference_video: ref('Reference'),
+            refs: { type: 'array', items: ref('Reference'), minItems: 1, maxItems: 10, description: 'Ordered reference images; item n is [Reference Image n] in the prompt.' },
             async: { type: 'boolean', default: true },
             webhook_url: { type: 'string', format: 'uri' },
             metadata: ref('Metadata')

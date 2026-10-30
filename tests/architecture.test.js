@@ -142,7 +142,7 @@ test('image and video generation preserve references, options and session-owned 
     const reference = { data_base64: 'abc', mime_type: 'image/png' };
     c.chat = async (prompt, options) => {
       assert.equal(options.waitForKind, kind);
-      assert.equal(options.ref_image, reference);
+      assert.deepEqual([...options.ref_images], [reference]);
       assert.equal(options.signal, controller.signal);
       assert.match(prompt, /16:9/);
       return { text: 'generated', sessionId: A, presentations: [{ kind, data: { [kind === 'image' ? 'images' : 'videos']: [{ path: 'own-output', mime: `${kind}/test` }] } }] };
@@ -155,6 +155,31 @@ test('image and video generation preserve references, options and session-owned 
     assert.equal(result.buffer.toString(), 'complete');
     assert.equal(cleaned, true);
   }
+});
+
+test('refs: reference images are sent upstream in order and numbered in the prompt', async () => {
+  const [a, b, c3] = ['aaa', 'bbb', 'ccc'].map((data_base64) => ({ data_base64, mime_type: 'image/png' }));
+  for (const kind of ['image', 'video']) {
+    const c = client();
+    let seen = null;
+    c.chat = async (prompt, options) => {
+      seen = { prompt, options };
+      return { text: '', sessionId: A, presentations: [{ kind, data: { [kind === 'image' ? 'images' : 'videos']: [{ path: 'out' }] } }] };
+    };
+    c.readFile = async () => Buffer.from('x');
+    c.deleteSession = async () => ({ ok: true });
+    await c[kind === 'image' ? 'generateImage' : 'generateVideo']('[Reference Image 1] holds [Reference Image 3]', { ref_image: a, ref_images: [b, c3] });
+    assert.deepEqual([...seen.options.ref_images], [a, b, c3]);
+    assert.match(seen.prompt, /3 reference images are attached/);
+    assert.match(seen.prompt, /image #3 is \[Reference Image 3\]/);
+    assert.match(seen.prompt, /\[Reference Image 1\] holds \[Reference Image 3\]/);
+  }
+
+  const c = client();
+  let payload = null;
+  c.sendRequest = async (method, route, body) => { payload = body; throw new Error('stop'); };
+  await assert.rejects(c.chat('hello', { ref_images: [a, b, c3], timeout: 1000 }), /stop/);
+  assert.deepEqual([...payload.items.map((it) => it.type === 'image' ? it.data_base64 : it.type)], ['aaa', 'bbb', 'ccc', 'text']);
 });
 
 test('downloads reject overflow, allow exact EOF, and clean sessions on download failure', async () => {

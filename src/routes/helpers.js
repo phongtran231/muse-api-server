@@ -21,6 +21,15 @@ const metadataSchema = z
 /** A reference media value: file ID, http(s) URL, or base64 data URI. */
 const referenceSchema = z.string().min(1).max(60 * 1024 * 1024);
 
+/** Max reference images per generation request (`refs`). */
+const MAX_REFS = 10;
+
+/**
+ * Ordered list of reference images. Position n (1-based) is "[Reference Image n]"
+ * in the prompt sent upstream.
+ */
+const refsSchema = z.array(referenceSchema).min(1).max(MAX_REFS);
+
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   cursor: z.string().min(1).max(64).optional()
@@ -83,6 +92,8 @@ module.exports = {
   z,
   metadataSchema,
   referenceSchema,
+  refsSchema,
+  MAX_REFS,
   listQuerySchema,
   idParamSchema,
   paginate,

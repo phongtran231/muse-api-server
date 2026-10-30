@@ -26,6 +26,8 @@ const JobSchema = new mongoose.Schema(
     },
     reference: {
       image_file_id: { type: String, default: null },
+      // All reference images in order (refs). image_file_id mirrors the first one for older readers.
+      image_file_ids: { type: [String], default: [] },
       video_file_id: { type: String, default: null }
     },
     // Upstream accounts that already failed this job (skipped on retry).

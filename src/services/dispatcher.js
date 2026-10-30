@@ -354,7 +354,7 @@ class Dispatcher extends EventEmitter {
       const onProgress = (text) => this._onProgress(ctx, text);
       const call = isVideo
         ? ctx.lease.client.generateVideo(job.prompt, {
-          ref_image: references.image,
+          ref_images: references.images,
           ref_video: references.video,
           aspect_ratio: job.params?.aspect_ratio || undefined,
           duration: job.params?.duration || undefined,
@@ -364,7 +364,7 @@ class Dispatcher extends EventEmitter {
           onProgress
         })
         : ctx.lease.client.generateImage(job.prompt, {
-          ref_image: references.image,
+          ref_images: references.images,
           aspect_ratio: job.params?.aspect_ratio || undefined,
           timeout,
           signal: ctx.controller.signal,
@@ -436,7 +436,7 @@ class Dispatcher extends EventEmitter {
   }
 
   async _loadReferences(job) {
-    const refs = { image: null, video: null };
+    const refs = { images: [], video: null };
     const load = async (fileId, param) => {
       try {
         const doc = await storage.getFileOrThrow(fileId, { apiKeyId: job.api_key_id, param });
@@ -445,7 +445,9 @@ class Dispatcher extends EventEmitter {
         throw new ApiError(ErrorCodes.REFERENCE_INVALID, { message: `The reference file '${fileId}' is no longer available.`, param });
       }
     };
-    if (job.reference?.image_file_id) refs.image = await load(job.reference.image_file_id, 'reference_image');
+    // Jobs created before `refs` only carry image_file_id.
+    const imageIds = job.reference?.image_file_ids?.length ? job.reference.image_file_ids : [job.reference?.image_file_id].filter(Boolean);
+    for (let i = 0; i < imageIds.length; i += 1) refs.images.push(await load(imageIds[i], `refs[${i}]`));
     if (job.reference?.video_file_id) refs.video = await load(job.reference.video_file_id, 'reference_video');
     return refs;
   }

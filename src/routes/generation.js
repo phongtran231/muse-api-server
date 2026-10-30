@@ -47,7 +47,7 @@ function terminalError(job) {
  * @param {'image'|'video'} spec.type
  * @param {boolean} spec.sync                Wait for completion.
  * @param {object} spec.params               Job params (aspect_ratio, duration, response_format).
- * @param {{image?: string, video?: string}} spec.references  Raw reference values.
+ * @param {{images?: string[], video?: string}} spec.references  Raw reference values (images in [Reference Image n] order).
  * @param {(job: object, res: object) => Promise<void>|void} spec.onSucceeded  Sync success renderer.
  */
 async function submitGeneration(req, res, { type, sync, params, references, onSucceeded }) {
@@ -63,11 +63,16 @@ async function submitGeneration(req, res, { type, sync, params, references, onSu
     await dispatcher.assertCanEnqueue(type, apiKey);
     const webhookUrl = body.webhook_url ? webhook.validateWebhookUrl(body.webhook_url) : null;
 
-    const reference = { image_file_id: null, video_file_id: null };
-    if (references.image) {
-      const doc = await media.resolveReference(references.image, { expectedKind: 'image', apiKeyId: apiKey._id, param: 'reference_image' });
-      reference.image_file_id = doc._id;
+    const reference = { image_file_id: null, image_file_ids: [], video_file_id: null };
+    // Order matters: element n becomes [Reference Image n] in the upstream prompt.
+    const images = references.images || [];
+    const offset = body.reference_image ? 1 : 0;
+    for (let i = 0; i < images.length; i += 1) {
+      const param = offset && i === 0 ? 'reference_image' : `refs[${i - offset}]`;
+      const doc = await media.resolveReference(images[i], { expectedKind: 'image', apiKeyId: apiKey._id, param });
+      reference.image_file_ids.push(doc._id);
     }
+    reference.image_file_id = reference.image_file_ids[0] || null;
     if (references.video) {
       const doc = await media.resolveReference(references.video, { expectedKind: 'video', apiKeyId: apiKey._id, param: 'reference_video' });
       reference.video_file_id = doc._id;
