@@ -677,3 +677,45 @@ test('large reference images are shrunk under the upstream budget; small ones ar
   assert.equal(same.mimeType, 'image/png');
   assert.ok(upstreamImageBudget(10) * 10 <= 2 * 1024 * 1024);
 });
+
+test('background reconnects leave a sleeping VM alone; a job wakes it', async () => {
+  let awake = false;
+  const renewCalls = [];
+  class Client extends EventEmitter {
+    constructor() { super(); this.ws = null; }
+    async connect() {
+      if (!awake) throw new Error('Unexpected server response: 502');
+      this.ws = { readyState: 1 };
+    }
+    async writeFile() {}
+    close() { this.ws = null; }
+  }
+  const { AccountPool } = isolated('src/services/pool.js', {
+    '../models': { CAPABILITIES: ['chat', 'image', 'video'], Account: { updateOne: async () => ({}) } },
+    '../core/client': {
+      MuseClient: Client,
+      fetchWssFromCookie: async (cookie, proxy, options) => {
+        renewCalls.push(Boolean(options.noBrowser));
+        if (options.noBrowser) { const e = new Error('The upstream VM is SUSPENDED.'); e.code = 'MUSE_VM_SUSPENDED'; throw e; }
+        awake = true; // Chromium path resumes the VM
+        return { hybrid: 'fresh', wsUrl: 'wss://test' };
+      }
+    },
+    '../core/credentials': { describeCredential: () => ({ type: 'hybrid', has_cookie: true, cookie: 'cookie', has_wss: true, wss_expired: false }), buildHybrid: () => '' }
+  });
+  const pool = new AccountPool();
+  const entry = pool._upsertEntry({ _id: 'acct', enabled: true, credential: 'valid-looking' });
+
+  await assert.rejects(pool._ensureClient(entry));
+  assert.equal(entry.sleeping, true);
+  assert.equal(awake, false);
+  assert.deepEqual([...renewCalls], [true]);
+
+  await assert.rejects(pool._ensureClient(entry)); // no further upstream traffic while asleep
+  assert.equal(renewCalls.length, 1);
+
+  const client = await pool._ensureClient(entry, { wake: true });
+  assert.equal(client.ws.readyState, 1);
+  assert.equal(entry.sleeping, false);
+  assert.equal(renewCalls.at(-1), false);
+});

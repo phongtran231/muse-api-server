@@ -1913,7 +1913,7 @@ async function fetchWssFromCookie(cookieString, proxy = null, options = {}) {
   const hasChromium = Boolean(detectChromium());
 
   // 1. If explicit browser preference requested AND Chromium is available, attempt Chromium first
-  if ((options.preferBrowser || options.useBrowser) && hasChromium) {
+  if ((options.preferBrowser || options.useBrowser) && hasChromium && !options.noBrowser) {
     try {
       console.log('[Bootstrap] Preferred browser extraction: launching Chromium...');
       return await extractWssViaChromium(clean, { proxy, ...options });
@@ -1951,7 +1951,9 @@ async function fetchWssFromCookie(cookieString, proxy = null, options = {}) {
   }
 
   // 3. Fallback to Chromium browser automation if HTTP failed (and wasn't already tried above)
-  if (hasChromium && !(options.preferBrowser || options.useBrowser)) {
+  // options.noBrowser: background renewals must not open muse.ai in a browser
+  // (that wakes a suspended VM, see pool `wake`).
+  if (hasChromium && !(options.preferBrowser || options.useBrowser) && !options.noBrowser) {
     try {
       console.log('[Bootstrap] HTTP probe failed. Falling back to Chromium browser automation...');
       return await extractWssViaChromium(clean, { proxy, ...options });

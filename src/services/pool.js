@@ -205,7 +205,8 @@ class AccountPool extends EventEmitter {
       if (entry.active[capability] >= limit) continue;
       // Least-loaded first; tie-break on total load, then least recently used.
       const totalActive = entry.active.chat + entry.active.image + entry.active.video;
-      const score = (entry.active[capability] / limit) * 1e6 + totalActive * 1e3 + entry.lastUsedAt / 1e13;
+      // Prefer accounts whose VM is awake: waking a sleeping one adds latency.
+      const score = (entry.active[capability] / limit) * 1e6 + totalActive * 1e3 + (entry.sleeping ? 500 : 0) + entry.lastUsedAt / 1e13;
       if (score < bestScore) {
         best = entry;
         bestScore = score;
@@ -276,7 +277,7 @@ class AccountPool extends EventEmitter {
       }
       try {
         signal?.throwIfAborted();
-        const client = await this._ensureClient(entry);
+        const client = await this._ensureClient(entry, { wake: true });
         signal?.throwIfAborted();
         entry.lastUsedAt = Date.now();
         return new Lease(this, entry, capability, client);
@@ -499,17 +500,36 @@ class AccountPool extends EventEmitter {
     return entry;
   }
 
-  _ensureClient(entry) {
+  /**
+   * Returns a connected client. Meta suspends idle VMs after a few minutes; only
+   * `wake: true` callers (jobs, admin test/refresh) may resume one. Background
+   * reconnects leave a sleeping VM alone instead of opening muse.ai every few
+   * minutes for every account.
+   */
+  _ensureClient(entry, { wake = false } = {}) {
     if (entry.client && entry.client.ws && entry.client.ws.readyState === 1) return Promise.resolve(entry.client);
-    if (!entry.connecting) {
-      entry.connecting = this._connect(entry).finally(() => {
-        entry.connecting = null;
-      });
+    if (entry.connecting) {
+      // A background connect may give up on a sleeping VM; a caller that needs the account then wakes it.
+      return wake && !entry.connectingWake ? entry.connecting.catch(() => this._ensureClient(entry, { wake: true })) : entry.connecting;
     }
+    if (!wake && entry.sleeping) {
+      return Promise.reject(new ApiError(ErrorCodes.UPSTREAM_ERROR, { message: 'The account VM is asleep; it is woken when a job needs it.' }));
+    }
+    entry.connectingWake = wake;
+    entry.connecting = this._connect(entry, { wake }).finally(() => {
+      entry.connecting = null;
+      entry.connectingWake = false;
+    });
     return entry.connecting;
   }
 
-  async _connect(entry) {
+  _markSleeping(entry) {
+    if (!entry.sleeping) log.info({ account: entry.id, name: entry.doc.name }, 'VM is asleep; leaving it until a job needs this account');
+    entry.sleeping = true;
+  }
+
+  async _connect(entry, { wake = false } = {}) {
+    const renewOptions = wake ? {} : { noBrowser: true };
     let credential = entry.doc.credential;
     let cred = describeCredential(credential);
     if (cred.type === 'wss' && cred.wss_expired) {
@@ -520,7 +540,7 @@ class AccountPool extends EventEmitter {
     if (cred.has_cookie && (!cred.has_wss || cred.wss_expired || entry.forceRefresh)) {
       try {
         log.info({ account: entry.id, name: entry.doc.name }, 'Account credentials missing or expired WSS; auto-renewing from cookie before connect');
-        await this._renewCredential(entry);
+        await this._renewCredential(entry, renewOptions);
         credential = entry.doc.credential;
         cred = describeCredential(credential);
       } catch (renewErr) {
@@ -547,12 +567,16 @@ class AccountPool extends EventEmitter {
       if (cred.has_cookie && retryable) {
         log.info({ account: entry.id, name: entry.doc.name }, 'WebSocket connection failed with retryable error; regenerating from attached cookie');
         try {
-          await this._renewCredential(entry);
+          await this._renewCredential(entry, renewOptions);
           client = buildClient(false);
           await client.connect();
         } catch (healErr) {
           this._closeClient(client);
-          if (!isVmUnavailable(healErr)) throw healErr;
+          if (!isVmUnavailable(healErr) && healErr.code !== 'MUSE_VM_SUSPENDED') throw healErr;
+          if (!wake) {
+            this._markSleeping(entry);
+            throw healErr;
+          }
           // A fresh token still gets 5xx: the VM is stuck even if /api/session says
           // RUNNING. Opening muse.ai in Chromium wakes it; it takes a few seconds to
           // accept connections afterwards.
@@ -566,6 +590,7 @@ class AccountPool extends EventEmitter {
     }
 
     entry.client = client;
+    entry.sleeping = false;
     entry.forceRefresh = false;
     entry.reconnectAttempts = 0;
     this._setStatus(entry, 'online');
@@ -688,6 +713,8 @@ class AccountPool extends EventEmitter {
   async keepAlive() {
     for (const entry of this.entries.values()) {
       if (!entry.doc.enabled || entry.removed) continue;
+      // Idle VM: keep-alive must not wake it (or renew a token nobody uses).
+      if (entry.sleeping) continue;
       const cred = describeCredential(entry.doc.credential);
 
       if (cred.type === 'wss') {
@@ -724,9 +751,10 @@ class AccountPool extends EventEmitter {
    * Includes mutex locking (entry.isRenewing) to prevent duplicate concurrent extractions.
    */
   async autoRenewAccount(entry, options = {}) {
-    const renewed = await this._renewCredential(entry, options);
+    const { wake = false, ...renewOptions } = options;
+    const renewed = await this._renewCredential(entry, wake ? renewOptions : { noBrowser: true, ...renewOptions });
     if (!renewed) return null;
-    const client = await this._ensureClient(entry);
+    const client = await this._ensureClient(entry, { wake });
     this._reportSuccess(entry);
     return { ...renewed, client };
   }
@@ -752,6 +780,11 @@ class AccountPool extends EventEmitter {
       try {
         result = await fetchWssFromCookie(cred.cookie, entry.doc.proxy || null, { preferBrowser: useBrowser, ...options });
       } catch (err) {
+        if (err.code === 'MUSE_VM_SUSPENDED') {
+          // Not a failure: Meta suspends idle VMs. Woken on demand (see _ensureClient).
+          this._markSleeping(entry);
+          throw err;
+        }
         log.error({ account: entry.id, name: entry.doc.name, err: sanitize(err.message) }, 'Auto-renewal fetchWssFromCookie failed');
         if (err.code === 'MUSE_AUTH_EXPIRED' || /invalid session|session expired|login required/i.test(err.message || '')) {
           entry.cooldownUntil = Number.MAX_SAFE_INTEGER;
@@ -824,6 +857,7 @@ class AccountPool extends EventEmitter {
       // connection to the same VM, and the upstream then drops the one in use (EPIPE).
       const isUnusable = force || isExpiredOrDegraded || isWssExpiring || isDisconnected;
       if (!isUnusable) continue;
+      if (!force && entry.sleeping) continue; // idle VM, woken on demand
       // The client is already reconnecting on its own; don't race it with a second connection.
       if (!force && !isExpiredOrDegraded && !isWssExpiring && (entry.connecting || entry.reconnectTimer)) continue;
 
@@ -915,7 +949,7 @@ class AccountPool extends EventEmitter {
         entry.cooldownUntil = 0;
         entry.failures = 0;
       }
-      const client = await this._ensureClient(entry);
+      const client = await this._ensureClient(entry, { wake: true });
       await client.listSessions();
       this._reportSuccess(entry);
       const cred = describeCredential(entry.doc.credential);
@@ -967,7 +1001,7 @@ class AccountPool extends EventEmitter {
     const entry = this._getLoadedEntry(accountId);
     const busy = entry.active.chat + entry.active.image + entry.active.video;
     if (busy > 0 && !force) throw new ApiError(ErrorCodes.ACCOUNT_BUSY);
-    const client = await this._ensureClient(entry).catch((err) => {
+    const client = await this._ensureClient(entry, { wake: true }).catch((err) => {
       throw classifyUpstreamError(err);
     });
     const result = await client.deleteAllSecondarySessions();
@@ -983,6 +1017,7 @@ class AccountPool extends EventEmitter {
       accounts[entry.id] = {
         status: entry.status,
         connected: Boolean(entry.client && entry.client.ws && entry.client.ws.readyState === 1),
+        sleeping: Boolean(entry.sleeping),
         active: { ...entry.active },
         limits: { chat: this.limitFor(entry, 'chat'), image: this.limitFor(entry, 'image'), video: this.limitFor(entry, 'video') },
         consecutive_failures: entry.failures,
