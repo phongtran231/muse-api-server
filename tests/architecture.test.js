@@ -15,7 +15,7 @@ class ApiError extends Error {
   constructor(def = {}, options = {}) { super(options.message || def.message || def.code); Object.assign(this, def, options); }
 }
 const ErrorCodes = new Proxy({}, { get: (_, key) => ({ code: key.toLowerCase(), message: key.toLowerCase() }) });
-const errors = { ApiError, ErrorCodes, classifyUpstreamError: e => e instanceof ApiError ? e : new ApiError(ErrorCodes.UPSTREAM_ERROR, { message: e.message }), isAccountLevelFailure: e => e.code?.startsWith('upstream') };
+const errors = { ApiError, ErrorCodes, classifyUpstreamError: e => e instanceof ApiError ? e : new ApiError(ErrorCodes.UPSTREAM_ERROR, { message: e.message }), isAccountLevelFailure: e => e.code?.startsWith('upstream'), isTransportFailure: e => /EPIPE|socket is not connected|socket closed/i.test(e.message || '') };
 const config = {
   pool: { defaultConcurrency: { chat: 4, image: 2, video: 1 }, chatSlotWaitMs: 0 },
   server: { nodeId: 'test-node', shutdownGraceMs: 0 },
@@ -650,4 +650,14 @@ test('proxy values in provider format are normalized to proxy URLs', () => {
   assert.equal(normalizeProxy('  '), null);
   assert.equal(normalizeProxy(null), null);
   assert.doesNotThrow(() => new URL(normalizeProxy('1.2.3.4:8080:user:p@ss')));
+});
+
+test('dropped upstream connections are classified as transport failures', () => {
+  const { classifyUpstreamError, isTransportFailure } = require('../src/errors');
+  for (const msg of ['write EPIPE', 'Upstream socket is not connected.', 'Upstream socket closed during chat.', 'Unexpected server response: 502', 'WebSocket connection to the upstream VM closed (code 1006, reason: none).']) {
+    assert.equal(isTransportFailure(classifyUpstreamError(new Error(msg))), true, msg);
+  }
+  for (const msg of ['The model did not produce a video for this request.', 'Unexpected server response: 401', 'Video generation timed out after 300s. Please retry.']) {
+    assert.equal(isTransportFailure(classifyUpstreamError(new Error(msg))), false, msg);
+  }
 });

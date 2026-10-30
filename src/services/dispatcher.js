@@ -36,7 +36,7 @@ const webhook = require('./webhook');
 const { serializeJob } = require('../serializers');
 const { detectMediaType } = require('../utils/mime');
 const { generateId } = require('../utils/crypto');
-const { ApiError, ErrorCodes, classifyUpstreamError, isAccountLevelFailure } = require('../errors');
+const { ApiError, ErrorCodes, classifyUpstreamError, isAccountLevelFailure, isTransportFailure } = require('../errors');
 
 const log = logger.child({ component: 'dispatcher' });
 
@@ -45,6 +45,8 @@ const PROGRESS_WRITE_INTERVAL_MS = 5000;
 const SWEEP_INTERVAL_MS = 15000;
 const PENDING_COUNT_REFRESH_MS = 2000;
 const ACQUIRE_WAIT_MS = 5000;
+// Extra re-queues allowed for dropped connections (EPIPE, socket closed, VM 502).
+const MAX_TRANSPORT_RETRIES = 3;
 // Typical generation durations used for the progress estimate curve.
 const EXPECTED_DURATION_MS = { image: 45000, video: 150000 };
 
@@ -487,6 +489,19 @@ class Dispatcher extends EventEmitter {
         $inc: { attempts: -1 }
       }).catch(() => {});
       return;
+    }
+
+    // Dropped connection: the request most likely never reached the model, so
+    // retry on a fresh connection without consuming an attempt.
+    if (isTransportFailure(apiError) && (job.transport_retries || 0) < MAX_TRANSPORT_RETRIES && !this.stopping) {
+      const res = await Job.updateOne(guard, {
+        $set: { status: 'queued', node_id: null, execution_id: null, account_id: null, progress: 0, progress_text: 'Reconnecting to upstream', heartbeat_at: null, last_attempt_error: errorInfo },
+        $inc: { attempts: -1, transport_retries: 1 }
+      }).catch(() => null);
+      if (res?.matchedCount) {
+        log.warn({ job: job._id, retry: (job.transport_retries || 0) + 1, account: lease?.accountId, err: errorInfo.message }, 'Job hit a dropped upstream connection; re-queued without consuming an attempt');
+        return;
+      }
     }
 
     const excluded = [...(job.excluded_accounts || []), ...(lease ? [lease.accountId] : [])];

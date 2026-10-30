@@ -530,7 +530,9 @@ class AccountPool extends EventEmitter {
     try {
       await client.connect();
     } catch (err) {
-      const retryable = err.code === 'MUSE_AUTH_EXPIRED' || /403|401|closed before the handshake|ECONNREFUSED|ETIMEDOUT|expired/i.test(err.message || '');
+      // 502/503/504 on the WSS handshake usually means the VM is suspended: a cookie
+      // renewal detects that and resumes it (Chromium fallback).
+      const retryable = err.code === 'MUSE_AUTH_EXPIRED' || /403|401|\b50[234]\b|closed before the handshake|ECONNREFUSED|ETIMEDOUT|expired/i.test(err.message || '');
       this._closeClient(client);
 
       // If account has a session cookie and hit a retryable error, auto-renew fresh WSS URL from the cookie
@@ -608,10 +610,12 @@ class AccountPool extends EventEmitter {
       entry.reconnectAttempts += 1;
       const delay = 3000 * entry.reconnectAttempts;
       log.info({ account: entry.id, delayMs: delay }, 'Connection closed; scheduling keep-warm reconnect');
-      const t = setTimeout(() => {
+      if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+      entry.reconnectTimer = setTimeout(() => {
+        entry.reconnectTimer = null;
         if (!entry.client && !entry.removed && entry.doc.enabled) this._ensureClient(entry).catch(() => {});
       }, delay);
-      t.unref?.();
+      entry.reconnectTimer.unref?.();
     });
   }
 
@@ -784,8 +788,12 @@ class AccountPool extends EventEmitter {
       const hasFailures = entry.failures > 0;
       const isDisconnected = !isConnected;
 
-      const isUnusable = force || isExpiredOrDegraded || isWssExpiring || hasFailures || isDisconnected;
+      // A live socket is proof the account works: renewing it would open a second
+      // connection to the same VM, and the upstream then drops the one in use (EPIPE).
+      const isUnusable = force || isExpiredOrDegraded || isWssExpiring || isDisconnected;
       if (!isUnusable) continue;
+      // The client is already reconnecting on its own; don't race it with a second connection.
+      if (!force && !isExpiredOrDegraded && !isWssExpiring && (entry.connecting || entry.reconnectTimer)) continue;
 
       // Throttle: don't attempt renewal for the same account more often than every 45s unless forced
       if (!force && entry.lastRenewAttempt && (now - entry.lastRenewAttempt) < 45000) {

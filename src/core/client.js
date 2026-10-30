@@ -17,6 +17,9 @@ const { extractWss, extractCookie, getWssExpiry, buildHybrid, normalizeProxy } =
 const DEFAULT_COOKIES = process.env.MUSE_COOKIES || '';
 // vm_state values from GET /api/session for a VM that must be resumed before connecting.
 const SLEEPING_VM_STATES = new Set(['SUSPENDED', 'STOPPED', 'HIBERNATED', 'PAUSED']);
+const PING_INTERVAL_MS = 15000;
+// No pong / message for this long means the socket is dead (about 3 missed pings).
+const STALE_SOCKET_MS = 50000;
 
 /**
  * Merge Set-Cookie headers into an existing "a=1; b=2" cookie string.
@@ -548,6 +551,9 @@ class MuseClient extends EventEmitter {
       }
 
       this.ws = new WebSocket(this.wsUrl, wsOptions);
+      const markAlive = () => { this.lastAliveAt = Date.now(); };
+      this.ws.on('pong', markAlive);
+      this.ws.on('message', markAlive);
 
       let isHandshaking = true;
       let connectSettled = false;
@@ -600,12 +606,23 @@ class MuseClient extends EventEmitter {
               isHandshaking = false;
               clearTimeout(handshakeTimer);
 
-              // Heartbeat: WS ping every 25s keeps the authenticated socket open as long as possible,
+              // Heartbeat: WS ping keeps the authenticated socket open as long as possible,
               // so we don't have to re-handshake with a (possibly expired) wss:// token.
+              // A socket that stops answering is terminated, so the pool reconnects
+              // instead of handing a dead socket to the next job (EPIPE).
               if (this._pingTimer) clearInterval(this._pingTimer);
+              this.lastAliveAt = Date.now();
               this._pingTimer = setInterval(() => {
-                try { if (this.ws && this.ws.readyState === 1) this.ws.ping(); } catch (e) {}
-              }, 25000);
+                try {
+                  if (!this.ws || this.ws.readyState !== 1) return;
+                  if (Date.now() - this.lastAliveAt > STALE_SOCKET_MS) {
+                    console.warn(`[Heartbeat] No pong for ${Math.round((Date.now() - this.lastAliveAt) / 1000)}s; terminating stale upstream socket.`);
+                    this.ws.terminate();
+                    return;
+                  }
+                  this.ws.ping();
+                } catch (e) {}
+              }, PING_INTERVAL_MS);
               if (this._pingTimer.unref) this._pingTimer.unref();
               // Subscribe to chat events in background after handshake
               this.subscribe().catch((err) => console.error('[Subscribe Error]:', err));

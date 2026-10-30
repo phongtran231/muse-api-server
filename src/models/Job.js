@@ -37,6 +37,8 @@ const JobSchema = new mongoose.Schema(
     execution_id: { type: String, default: null },
     attempts: { type: Number, default: 0 },
     max_attempts: { type: Number, default: 2 },
+    // Re-queues caused by dropped upstream connections (do not consume attempts).
+    transport_retries: { type: Number, default: 0 },
     progress: { type: Number, default: 0, min: 0, max: 100 },
     progress_text: { type: String, default: null },
     output: {

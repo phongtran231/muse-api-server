@@ -73,4 +73,14 @@ function isAccountLevelFailure(apiError) {
   return ['upstream_auth_failed', 'upstream_error', 'upstream_timeout'].includes(apiError.code);
 }
 
-module.exports = { ApiError, ErrorCodes, classifyUpstreamError, isAccountLevelFailure };
+/**
+ * True when the failure happened on the connection itself (socket dropped, VM
+ * waking up, gateway 5xx) rather than inside the model. The request usually
+ * never reached the model, so it is safe to retry on a fresh connection.
+ */
+function isTransportFailure(apiError) {
+  if (!apiError || !['upstream_error', 'upstream_timeout'].includes(apiError.code)) return false;
+  return /EPIPE|ECONNRESET|socket hang up|socket is not connected|socket closed|connection to the upstream VM closed|closed before the handshake|handshake timed out|Unexpected server response: 5\d\d/i.test(apiError.message || '');
+}
+
+module.exports = { ApiError, ErrorCodes, classifyUpstreamError, isAccountLevelFailure, isTransportFailure };
