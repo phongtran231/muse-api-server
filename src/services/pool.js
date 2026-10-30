@@ -43,6 +43,14 @@ const ISOLATION_POLICY = `# AGENTS.md
 const STATS_FLUSH_INTERVAL_MS = 10000;
 const RETIRE_CHECK_INTERVAL_MS = 5000;
 const RETIRE_MAX_WAIT_MS = 15 * 60 * 1000;
+// After waking a VM via Chromium it needs a few seconds before the WSS handshake succeeds.
+const VM_WAKE_CONNECT_ATTEMPTS = 4;
+const VM_WAKE_RETRY_DELAY_MS = 5000;
+
+/** WSS handshake rejected by the gateway because the account's VM is not serving. */
+function isVmUnavailable(err) {
+  return /Unexpected server response: 50[234]/.test(err?.message || '');
+}
 
 /** A reserved slot on an account. Must be released exactly once. */
 class Lease {
@@ -544,7 +552,13 @@ class AccountPool extends EventEmitter {
           await client.connect();
         } catch (healErr) {
           this._closeClient(client);
-          throw healErr;
+          if (!isVmUnavailable(healErr)) throw healErr;
+          // A fresh token still gets 5xx: the VM is stuck even if /api/session says
+          // RUNNING. Opening muse.ai in Chromium wakes it; it takes a few seconds to
+          // accept connections afterwards.
+          log.info({ account: entry.id, name: entry.doc.name }, 'VM still unavailable after renewal; waking it via Chromium');
+          await this._renewCredential(entry, { preferBrowser: true });
+          client = await this._connectWithRetry(entry, buildClient);
         }
       } else {
         throw err;
@@ -560,6 +574,24 @@ class AccountPool extends EventEmitter {
     client.writeFile('AGENTS.md', Buffer.from(ISOLATION_POLICY, 'utf8')).catch(() => {});
     log.info({ account: entry.id, name: entry.doc.name }, 'Upstream connection established');
     return client;
+  }
+
+  /** Connects a freshly woken VM, retrying while it still answers 5xx. */
+  async _connectWithRetry(entry, buildClient) {
+    let lastErr = null;
+    for (let i = 0; i < VM_WAKE_CONNECT_ATTEMPTS; i += 1) {
+      await new Promise((r) => setTimeout(r, VM_WAKE_RETRY_DELAY_MS));
+      const client = buildClient(false);
+      try {
+        await client.connect();
+        return client;
+      } catch (err) {
+        this._closeClient(client);
+        lastErr = err;
+        if (!isVmUnavailable(err)) break;
+      }
+    }
+    throw lastErr;
   }
 
   _persistRenewedCredential(entry, client) {
