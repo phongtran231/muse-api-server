@@ -439,16 +439,17 @@ class Dispatcher extends EventEmitter {
 
   async _loadReferences(job) {
     const refs = { images: [], video: null };
+    const imageIds = job.reference?.image_file_ids?.length ? job.reference.image_file_ids : [job.reference?.image_file_id].filter(Boolean);
+    const maxImageBytes = media.upstreamImageBudget(imageIds.length);
     const load = async (fileId, param) => {
       try {
         const doc = await storage.getFileOrThrow(fileId, { apiKeyId: job.api_key_id, param });
-        return await media.toUpstreamPayload(doc);
+        return await media.toUpstreamPayload(doc, { maxImageBytes });
       } catch (err) {
         throw new ApiError(ErrorCodes.REFERENCE_INVALID, { message: `The reference file '${fileId}' is no longer available.`, param });
       }
     };
-    // Jobs created before `refs` only carry image_file_id.
-    const imageIds = job.reference?.image_file_ids?.length ? job.reference.image_file_ids : [job.reference?.image_file_id].filter(Boolean);
+    // Jobs created before `refs` only carry image_file_id (handled by imageIds above).
     for (let i = 0; i < imageIds.length; i += 1) refs.images.push(await load(imageIds[i], `refs[${i}]`));
     if (job.reference?.video_file_id) refs.video = await load(job.reference.video_file_id, 'reference_video');
     return refs;

@@ -151,14 +151,63 @@ async function resolveReference(value, { expectedKind, apiKeyId, param }) {
   throw new ApiError(ErrorCodes.REFERENCE_INVALID, { param });
 }
 
-/** Converts a stored File into the payload shape expected by the upstream client. */
-async function toUpstreamPayload(fileDoc) {
-  const buffer = await storage.readFileBuffer(fileDoc);
+// The upstream drops the WebSocket (write EPIPE) when a message carries large
+// images: requests with ~2-4 MB PNG references always failed, ~100-300 KB JPEGs
+// always worked. Reference images are therefore shrunk before sending (the
+// stored original is untouched), like the muse.ai web client does on upload.
+const UPSTREAM_IMAGE_TOTAL_BYTES = 2 * 1024 * 1024;
+const UPSTREAM_IMAGE_MAX_BYTES = 400 * 1024;
+const UPSTREAM_IMAGE_STEPS = [
+  { size: 1536, quality: 85 },
+  { size: 1280, quality: 80 },
+  { size: 1024, quality: 75 },
+  { size: 768, quality: 70 }
+];
+
+/** Per-image byte budget when `count` images go into one upstream message. */
+function upstreamImageBudget(count = 1) {
+  return Math.min(UPSTREAM_IMAGE_MAX_BYTES, Math.floor(UPSTREAM_IMAGE_TOTAL_BYTES / Math.max(1, count)));
+}
+
+/** Re-encodes an image as JPEG until it fits `maxBytes`; returns the original when it already fits. */
+async function shrinkImage(buffer, mimeType, maxBytes) {
+  const sharp = require('sharp');
+  let meta = null;
+  try {
+    meta = await sharp(buffer).metadata();
+  } catch (err) {
+    return { buffer, mimeType }; // not decodable here; send as-is
+  }
+  const longest = Math.max(meta.width || 0, meta.height || 0);
+  if (buffer.length <= maxBytes && longest <= UPSTREAM_IMAGE_STEPS[0].size) return { buffer, mimeType };
+
+  let out = buffer;
+  for (const step of UPSTREAM_IMAGE_STEPS) {
+    out = await sharp(buffer, { animated: false })
+      .rotate()
+      .resize({ width: step.size, height: step.size, fit: 'inside', withoutEnlargement: true })
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality: step.quality, mozjpeg: true })
+      .toBuffer();
+    if (out.length <= maxBytes) break;
+  }
+  return { buffer: out, mimeType: 'image/jpeg' };
+}
+
+/**
+ * Converts a stored File into the payload shape expected by the upstream client.
+ * @param {object} fileDoc
+ * @param {{ maxImageBytes?: number }} [options]  Byte budget for an image (see upstreamImageBudget).
+ */
+async function toUpstreamPayload(fileDoc, { maxImageBytes = UPSTREAM_IMAGE_MAX_BYTES } = {}) {
+  let buffer = await storage.readFileBuffer(fileDoc);
+  let mimeType = fileDoc.mime_type;
+  if (fileDoc.kind === 'image') ({ buffer, mimeType } = await shrinkImage(buffer, mimeType, maxImageBytes));
   return {
-    mime_type: fileDoc.mime_type,
+    mime_type: mimeType,
     data_base64: buffer.toString('base64'),
-    filename: fileDoc.filename || `${fileDoc._id}.${fileDoc.kind === 'video' ? 'mp4' : 'png'}`
+    filename: fileDoc.filename || `${fileDoc._id}.${fileDoc.kind === 'video' ? 'mp4' : (mimeType === 'image/jpeg' ? 'jpg' : 'png')}`
   };
 }
 
-module.exports = { ingestBuffer, resolveReference, toUpstreamPayload, maxBytesFor };
+module.exports = { ingestBuffer, resolveReference, toUpstreamPayload, upstreamImageBudget, shrinkImage, maxBytesFor };

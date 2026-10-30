@@ -87,9 +87,10 @@ async function resolveAttachments(message, apiKeyId) {
   }
 
   const items = [];
+  const maxImageBytes = media.upstreamImageBudget(images.length);
   for (const img of images) {
     const doc = await media.resolveReference(img.url, { expectedKind: 'image', apiKeyId, param: img.param });
-    const payload = await media.toUpstreamPayload(doc);
+    const payload = await media.toUpstreamPayload(doc, { maxImageBytes });
     items.push({ type: 'image', mime_type: payload.mime_type, data_base64: payload.data_base64 });
   }
   for (const vid of videos) {

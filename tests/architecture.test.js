@@ -661,3 +661,19 @@ test('dropped upstream connections are classified as transport failures', () => 
     assert.equal(isTransportFailure(classifyUpstreamError(new Error(msg))), false, msg);
   }
 });
+
+test('large reference images are shrunk under the upstream budget; small ones are untouched', async () => {
+  const sharp = require('sharp');
+  const { shrinkImage, upstreamImageBudget } = require('../src/services/media');
+  const big = await sharp(require('node:crypto').randomBytes(1600 * 1600 * 3), { raw: { width: 1600, height: 1600, channels: 3 } }).png().toBuffer();
+  assert.ok(big.length > 2 * 1024 * 1024);
+  const budget = upstreamImageBudget(6);
+  const out = await shrinkImage(big, 'image/png', budget);
+  assert.equal(out.mimeType, 'image/jpeg');
+  assert.ok(out.buffer.length <= budget, `${out.buffer.length} > ${budget}`);
+  const small = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#f00' } }).png().toBuffer();
+  const same = await shrinkImage(small, 'image/png', budget);
+  assert.equal(same.buffer, small);
+  assert.equal(same.mimeType, 'image/png');
+  assert.ok(upstreamImageBudget(10) * 10 <= 2 * 1024 * 1024);
+});
