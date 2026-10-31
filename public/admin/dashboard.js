@@ -828,6 +828,52 @@ function previewMedia(url, mimeType, prompt) {
 document.getElementById('openAddAccountBtn')?.addEventListener('click', () => openModal('modalAddAccount'));
 
 // ---------------------------------------------------------------------------
+// Shared proxy pool
+// ---------------------------------------------------------------------------
+async function loadProxyPool() {
+  const res = await api('/proxy-pool');
+  document.getElementById('proxyPoolList').value = (res.proxies || []).join('\n');
+  document.getElementById('proxyPoolCount').textContent = `${(res.proxies || []).length} proxies`;
+  document.getElementById('proxyPoolAccounts').textContent = `${res.accounts_on_pool} of ${res.accounts_total} accounts use the pool.`;
+  document.getElementById('proxyPoolStatus').innerHTML = (res.status || []).map((s) => `
+    <div style="display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border-subtle);">
+      <span class="font-mono">${escapeHtml(s.proxy)}</span>
+      <span style="color: ${s.alive ? '#34D399' : '#FB7185'};">${s.alive ? 'OK' : 'DOWN'}${s.error ? ` · ${escapeHtml(s.error)}` : ''}${s.checked_at ? ` · ${timeAgo(s.checked_at)}` : ' · not checked yet'}</span>
+    </div>`).join('');
+}
+
+document.getElementById('openProxyPoolBtn')?.addEventListener('click', async () => {
+  openModal('modalProxyPool');
+  try {
+    await loadProxyPool();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+});
+
+document.getElementById('formProxyPool')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const res = await api('/proxy-pool', { method: 'PUT', body: { proxies: document.getElementById('proxyPoolList').value } });
+    showToast(`Proxy pool saved (${res.proxies.length} proxies).`, 'success');
+    await loadProxyPool();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+});
+
+document.getElementById('btnAssignProxyPool')?.addEventListener('click', async () => {
+  try {
+    const res = await api('/proxy-pool/assign-all', { method: 'POST' });
+    showToast(`${res.updated} account(s) now use the proxy pool.`, 'success');
+    await loadProxyPool();
+    loadAccounts();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Bulk import (cookies -> Redis queue -> one account at a time)
 // ---------------------------------------------------------------------------
 let bulkImportBatchId = null;

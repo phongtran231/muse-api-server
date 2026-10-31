@@ -14,7 +14,8 @@
 
 const config = require('../config');
 const { Account } = require('../models');
-const { normalizeProxy } = require('../core/credentials');
+const { normalizeProxy, POOL_PROXY } = require('../core/credentials');
+const proxyPool = require('./proxyPool');
 const { logger, sanitize } = require('../logger');
 const { generateId } = require('../utils/crypto');
 const { ApiError, ErrorCodes } = require('../errors');
@@ -78,6 +79,7 @@ function parseProxyLines(text) {
 /** host:port of a proxy URL, never the credentials. */
 function proxyHost(proxy) {
   if (!proxy) return null;
+  if (proxy === POOL_PROXY) return 'pool (random)';
   try {
     const u = new URL(proxy);
     const defaultPort = { 'http:': '80', 'https:': '443' }[u.protocol] || '1080';
@@ -246,7 +248,10 @@ async function createBatch(input) {
     const p = normalizeProxy(a.proxy);
     if (p) proxyCounts.set(p, (proxyCounts.get(p) || 0) + 1);
   }
-  const assigned = assignProxies(proxies, proxyCounts, toQueue.length);
+  // No proxies pasted: use the shared pool (random proxy per connection) when it has entries.
+  const assigned = proxies.length
+    ? assignProxies(proxies, proxyCounts, toQueue.length)
+    : Array(toQueue.length).fill(proxyPool.list().length ? POOL_PROXY : null);
   const names = toQueue.length ? await reserveNames(prefix, toQueue.length, accounts.map((a) => a.name)) : [];
   toQueue.forEach((entry, i) => {
     entry.item.name = names[i];
@@ -286,7 +291,7 @@ async function createBatch(input) {
 
 /** Fails fast on a dead proxy instead of letting renewal retry it for minutes. */
 async function checkProxy(proxy) {
-  if (!proxy) return;
+  if (!proxy || proxy === POOL_PROXY) return;
   const axios = require('axios');
   const { HttpsProxyAgent } = require('https-proxy-agent');
   try {

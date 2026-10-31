@@ -181,6 +181,21 @@ async function composeCredentialAsync(params = {}, existing = '') {
   return comp;
 }
 
+// Account proxy value meaning "pick a random proxy from the shared pool on every connection".
+const POOL_PROXY = 'pool';
+let pickPoolProxy = () => null;
+
+/** Registers the shared proxy pool picker (services/proxyPool). */
+function setProxyPoolPicker(fn) {
+  pickPoolProxy = typeof fn === 'function' ? fn : () => null;
+}
+
+/** Proxy URL to use for a connection: "pool" becomes a random pool entry (null if the pool is empty). */
+function resolveProxy(value) {
+  const proxy = normalizeProxy(value);
+  return proxy === POOL_PROXY ? (pickPoolProxy() || null) : proxy;
+}
+
 /**
  * Normalizes a proxy value to a URL usable by https-proxy-agent and Chromium.
  * Accepts full URLs (http://, https://, socks5://) and the common provider
@@ -191,6 +206,7 @@ function normalizeProxy(value) {
   if (value === null || value === undefined) return null;
   const raw = String(value).trim();
   if (!raw) return null;
+  if (raw.toLowerCase() === POOL_PROXY) return POOL_PROXY;
   if (/^(https?|socks[45]?h?):\/\//i.test(raw)) return raw;
   if (raw.includes('@')) return `http://${raw}`;
   const parts = raw.split(':');
@@ -203,6 +219,9 @@ function normalizeProxy(value) {
 }
 
 module.exports = {
+  POOL_PROXY,
+  setProxyPoolPicker,
+  resolveProxy,
   normalizeProxy,
   extractWss,
   extractCookie,

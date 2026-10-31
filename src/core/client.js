@@ -12,7 +12,7 @@ const {
   decodeProtoFields,
   NoiseFrameDecoder
 } = require('./proto');
-const { extractWss, extractCookie, getWssExpiry, buildHybrid, normalizeProxy } = require('./credentials');
+const { extractWss, extractCookie, getWssExpiry, buildHybrid, resolveProxy } = require('./credentials');
 
 const DEFAULT_COOKIES = process.env.MUSE_COOKIES || '';
 // vm_state values from GET /api/session for a VM that must be resumed before connecting.
@@ -188,7 +188,7 @@ class MuseClient extends EventEmitter {
     super();
     this.wsUrl = options.wsUrl || null;
     this.cookies = options.cookies || DEFAULT_COOKIES;
-    this.proxy = normalizeProxy(options.proxy || process.env.MUSE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null);
+    this.proxy = resolveProxy(options.proxy || process.env.MUSE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null);
     this.ws = null;
     this.sendCipher = null;
     this.recvCipher = null;
@@ -1907,7 +1907,7 @@ async function fetchWssFromCookie(cookieString, proxy = null, options = {}) {
   if (!clean.includes('hatch_sess=')) {
     throw new Error('Invalid cookie: it must contain hatch_sess=... (upstream login session).');
   }
-  proxy = normalizeProxy(proxy);
+  proxy = resolveProxy(proxy);
 
   const { extractWssViaChromium, detectChromium } = require('./browser');
   const hasChromium = Boolean(detectChromium());

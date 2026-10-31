@@ -854,6 +854,10 @@
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 <span>Auto-Recover WSS</span>
               </button>
+              <button class="btn btn-secondary" id="openProxyPoolBtn" title="Shared proxy pool: accounts with proxy &quot;pool&quot; use a random entry on every connection" style="display: flex; align-items: center; gap: 6px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <span>Proxy Pool</span>
+              </button>
               <button class="btn btn-secondary" id="openBulkImportBtn" title="Paste many cookies; they are onboarded one at a time through a queue" style="display: flex; align-items: center; gap: 6px;">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 <span>Bulk Import</span>
@@ -1182,6 +1186,34 @@
   </div>
 </div>
 
+<!-- Modal: Shared proxy pool -->
+<div class="modal-backdrop" id="modalProxyPool">
+  <div class="modal-container" style="max-width: 640px;">
+    <div class="modal-header">
+      <h3 class="modal-title">Proxy Pool</h3>
+      <button class="btn btn-secondary btn-icon close-modal-btn">&times;</button>
+    </div>
+    <form id="formProxyPool">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" for="proxyPoolList">
+            <span>Proxies (one per line)</span>
+            <span id="proxyPoolCount" style="font-size: 11px; color: var(--text-dim);"></span>
+          </label>
+          <textarea id="proxyPoolList" class="form-textarea font-mono" rows="8" placeholder="host:port:user:pass&#10;http://user:pass@host:port"></textarea>
+          <span style="font-size: 11px; color: var(--text-dim);">Accounts whose proxy is <b>pool</b> pick a random proxy from this list every time they (re)connect. Set an account's proxy to <span class="font-mono">pool</span> in Edit, or use the button below. Proxies are checked every 2 minutes; ones that fail twice (expired, unreachable) are skipped until they work again.</span>
+        </div>
+        <div id="proxyPoolStatus" style="font-size: 12px; margin-bottom: 8px;"></div>
+        <div id="proxyPoolAccounts" style="font-size: 12px; color: var(--text-muted);"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" id="btnAssignProxyPool">Assign pool to all accounts</button>
+        <button type="submit" class="btn btn-primary" id="btnSaveProxyPool">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Modal: Bulk import accounts from cookies (Redis queue) -->
 <div class="modal-backdrop" id="modalBulkImport">
   <div class="modal-container" style="max-width: 820px;">
@@ -1205,7 +1237,7 @@
         <div class="form-group">
           <label class="form-label" for="bulkProxies">Proxies (optional, one per line)</label>
           <textarea id="bulkProxies" class="form-textarea font-mono" rows="3" placeholder="host:port:user:pass&#10;http://user:pass@host:port"></textarea>
-          <span style="font-size: 11px; color: var(--text-dim);">Each new account gets the proxy that currently has the fewest accounts.</span>
+          <span style="font-size: 11px; color: var(--text-dim);">Each new account gets the proxy that currently has the fewest accounts. Leave empty to use the Proxy Pool (random proxy per connection).</span>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end;">
           <div class="form-group" style="margin-bottom: 0;">

@@ -60,7 +60,7 @@ const proxySchema = z
   .string()
   .max(2048)
   .transform((v) => normalizeProxy(v))
-  .refine((v) => v === null || /^(https?|socks5?):\/\//i.test(v), 'Proxy must be a URL (http://, socks5://) or host:port[:user:pass]')
+  .refine((v) => v === null || v === 'pool' || /^(https?|socks5?):\/\//i.test(v), 'Proxy must be a URL (http://, socks5://), host:port[:user:pass], or "pool"')
   .nullable();
 
 const accountFields = {

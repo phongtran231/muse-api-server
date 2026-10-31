@@ -750,3 +750,18 @@ test('bulk import reads "email|code|password|cookie|" lines without keeping the 
   assert.equal(cookies[0].cookie, 'wd=1366x900; datr=x; hatch_sess=12345678-aaaa.v1%3Axyz.sig');
   assert.ok(!cookies[0].cookie.includes('p@ss') && !cookies[0].cookie.includes('ABC123'));
 });
+
+test('proxy "pool" resolves to a random pool entry; other values are unchanged', () => {
+  const cred = require('../src/core/credentials');
+  assert.equal(cred.normalizeProxy(' Pool '), 'pool');
+  cred.setProxyPoolPicker(() => null);
+  assert.equal(cred.resolveProxy('pool'), null); // empty pool -> direct
+  const seen = new Set();
+  const list = ['http://a:1', 'http://b:2'];
+  cred.setProxyPoolPicker(() => list[seen.size % 2]);
+  for (let i = 0; i < 4; i += 1) seen.add(cred.resolveProxy('pool'));
+  assert.ok([...seen].every((p) => list.includes(p)));
+  assert.equal(cred.resolveProxy('1.2.3.4:80:u:p'), 'http://u:p@1.2.3.4:80');
+  assert.equal(cred.resolveProxy(null), null);
+  cred.setProxyPoolPicker(null);
+});

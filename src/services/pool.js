@@ -26,7 +26,7 @@ const config = require('../config');
 const { logger, sanitize } = require('../logger');
 const { Account, CAPABILITIES, Setting } = require('../models');
 const { MuseClient, fetchWssFromCookie } = require('../core/client');
-const { describeCredential, buildHybrid } = require('../core/credentials');
+const { describeCredential, buildHybrid, resolveProxy = (p) => p || null } = require('../core/credentials');
 const { ApiError, ErrorCodes, classifyUpstreamError, isAccountLevelFailure } = require('../errors');
 
 const log = logger.child({ component: 'pool' });
@@ -46,6 +46,17 @@ const RETIRE_MAX_WAIT_MS = 15 * 60 * 1000;
 // After waking a VM via Chromium it needs a few seconds before the WSS handshake succeeds.
 const VM_WAKE_CONNECT_ATTEMPTS = 4;
 const VM_WAKE_RETRY_DELAY_MS = 5000;
+
+/** host:port of a proxy URL for logs (never the credentials). */
+function proxyLabel(proxy) {
+  if (!proxy) return 'direct';
+  try {
+    const u = new URL(proxy);
+    return `${u.hostname}:${u.port}${u.username ? ` (${decodeURIComponent(u.username)})` : ''}`;
+  } catch (e) {
+    return 'invalid';
+  }
+}
 
 /** WSS handshake rejected by the gateway because the account's VM is not serving. */
 function isVmUnavailable(err) {
@@ -529,7 +540,12 @@ class AccountPool extends EventEmitter {
   }
 
   async _connect(entry, { wake = false } = {}) {
-    const renewOptions = wake ? {} : { noBrowser: true };
+    // One proxy per connection: with proxy "pool" a random pool entry is picked here
+    // and used for both the token renewal and the WebSocket, so a session keeps one IP.
+    // A renewal that ran just before (watchdog / keep-alive) already picked one: reuse it.
+    const proxy = entry.renewedProxy !== undefined ? entry.renewedProxy : resolveProxy(entry.doc.proxy);
+    entry.renewedProxy = undefined;
+    const renewOptions = wake ? { proxy } : { noBrowser: true, proxy };
     let credential = entry.doc.credential;
     let cred = describeCredential(credential);
     if (cred.type === 'wss' && cred.wss_expired) {
@@ -549,7 +565,7 @@ class AccountPool extends EventEmitter {
     }
 
     const buildClient = (force) => {
-      const client = new MuseClient({ cookies: entry.doc.credential, proxy: entry.doc.proxy || null });
+      const client = new MuseClient({ cookies: entry.doc.credential, proxy });
       if (force) client.forceRefresh = true;
       return client;
     };
@@ -581,7 +597,7 @@ class AccountPool extends EventEmitter {
           // RUNNING. Opening muse.ai in Chromium wakes it; it takes a few seconds to
           // accept connections afterwards.
           log.info({ account: entry.id, name: entry.doc.name }, 'VM still unavailable after renewal; waking it via Chromium');
-          await this._renewCredential(entry, { preferBrowser: true });
+          await this._renewCredential(entry, { preferBrowser: true, proxy });
           client = await this._connectWithRetry(entry, buildClient);
         }
       } else {
@@ -597,7 +613,7 @@ class AccountPool extends EventEmitter {
     this._persistRenewedCredential(entry, client);
     this._attachClientHandlers(entry, client);
     client.writeFile('AGENTS.md', Buffer.from(ISOLATION_POLICY, 'utf8')).catch(() => {});
-    log.info({ account: entry.id, name: entry.doc.name }, 'Upstream connection established');
+    log.info({ account: entry.id, name: entry.doc.name, proxy: proxyLabel(proxy) }, 'Upstream connection established');
     return client;
   }
 
@@ -778,7 +794,9 @@ class AccountPool extends EventEmitter {
       const useBrowser = options.preferBrowser ?? options.useBrowser ?? Boolean(entry.doc.metadata?.use_browser);
       let result;
       try {
-        result = await fetchWssFromCookie(cred.cookie, entry.doc.proxy || null, { preferBrowser: useBrowser, ...options });
+        const proxy = options.proxy !== undefined ? options.proxy : resolveProxy(entry.doc.proxy);
+        if (options.proxy === undefined) entry.renewedProxy = proxy; // the next _connect uses the same IP
+        result = await fetchWssFromCookie(cred.cookie, proxy, { preferBrowser: useBrowser, ...options, proxy });
       } catch (err) {
         if (err.code === 'MUSE_VM_SUSPENDED') {
           // Not a failure: Meta suspends idle VMs. Woken on demand (see _ensureClient).
@@ -978,7 +996,7 @@ class AccountPool extends EventEmitter {
     }
     let result;
     try {
-      result = await fetchWssFromCookie(cred.cookie, doc.proxy || null, options);
+      result = await fetchWssFromCookie(cred.cookie, resolveProxy(doc.proxy), options);
     } catch (err) {
       const apiError = classifyUpstreamError(err);
       throw new ApiError(ErrorCodes.CREDENTIAL_INVALID, { message: `Failed to regenerate the wss:// URL from the cookie: ${apiError.message}`, cause: err });

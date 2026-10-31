@@ -22,6 +22,7 @@ const config = require('./config');
 const { logger, redirectConsole } = require('./logger');
 const { connectDatabase, disconnectDatabase } = require('./db');
 const { ensureStorage } = require('./services/storage');
+const proxyPool = require('./services/proxyPool');
 const { pool } = require('./services/pool');
 const { dispatcher } = require('./services/dispatcher');
 const { startUsageFlusher, stopUsageFlusher } = require('./services/usage');
@@ -38,6 +39,7 @@ async function main() {
 
   await connectDatabase();
   await ensureStorage();
+  await proxyPool.load();
   await pool.init();
   const concurrencySetting = await Setting.findOne({ key: 'concurrency_settings' }).lean().catch((err) => {
     log.warn({ err: err.message }, 'Failed to load queue capacity setting; using configured default');
@@ -81,6 +83,7 @@ async function main() {
 
     await dispatcher.stop(config.server.shutdownGraceMs);
     stopMaintenance();
+    proxyPool.stop();
     await stopAccountImport();
     await Promise.race([serverClosed, new Promise((r) => setTimeout(r, 5000))]);
     server.closeAllConnections?.();

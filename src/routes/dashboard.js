@@ -21,6 +21,7 @@ const { requireDashboardAuth } = require('../middleware/dashboardAuth');
 const { serializeAccount, serializeApiKey, serializeJob } = require('../serializers');
 const { onboardAccount } = require('../services/accounts');
 const accountImport = require('../services/accountImport');
+const proxyPool = require('../services/proxyPool');
 const { logger, sanitize } = require('../logger');
 const { ApiError, ErrorCodes } = require('../errors');
 
@@ -367,6 +368,39 @@ router.post('/api/accounts', async (req, res, next) => {
   try {
     const { account, test } = await onboardAccount(req.body || {});
     res.status(201).json({ ...serializeAccount(account, pool.snapshot().accounts[account._id]), test });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Shared proxy pool (accounts with proxy "pool" pick a random entry per connection).
+router.get('/api/proxy-pool', async (req, res, next) => {
+  try {
+    const accounts = await Account.find({}).select('+proxy').lean();
+    res.json({ proxies: proxyPool.list(), status: proxyPool.status(), accounts_on_pool: accounts.filter((a) => a.proxy === 'pool').length, accounts_total: accounts.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put('/api/proxy-pool', async (req, res, next) => {
+  try {
+    const proxies = await proxyPool.save((req.body || {}).proxies);
+    await proxyPool.checkAll();
+    res.json({ proxies, status: proxyPool.status() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Points every account at the pool; each reconnects with a random pool proxy.
+router.post('/api/proxy-pool/assign-all', async (req, res, next) => {
+  try {
+    if (!proxyPool.list().length) throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'The proxy pool is empty. Save some proxies first.' });
+    const accounts = await Account.find({ proxy: { $ne: 'pool' } }).select('_id').lean();
+    await Account.updateMany({ _id: { $in: accounts.map((a) => a._id) } }, { $set: { proxy: 'pool' } });
+    for (const a of accounts) await pool.reload(a._id).catch(() => {});
+    res.json({ updated: accounts.length });
   } catch (err) {
     next(err);
   }
