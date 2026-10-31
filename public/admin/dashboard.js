@@ -897,6 +897,7 @@ let bulkImportTimer = null;
 const BULK_STATUS_BADGE = {
   queued: 'badge-queued',
   processing: 'badge-running',
+  waiting_vm: 'badge-queued',
   done: 'badge-succeeded',
   failed: 'badge-failed',
   skipped: 'badge-offline',
@@ -910,13 +911,14 @@ function countCookieLines(text) {
 function renderBulkImport(batch) {
   document.getElementById('bulkImportProgress').style.display = 'block';
   const c = batch.counts || {};
-  const pending = (c.queued || 0) + (c.processing || 0);
+  const pending = (c.queued || 0) + (c.processing || 0) + (c.waiting_vm || 0);
   document.getElementById('bulkImportTitle').textContent = `Batch ${batch.id} · ${formatDate(batch.created_at)} · every ${batch.interval_sec}s`;
   document.getElementById('bulkImportCounts').textContent =
     `${c.done || 0} done · ${c.failed || 0} failed · ${c.skipped || 0} skipped · ${c.processing || 0} processing · ${c.queued || 0} queued` +
+    (c.waiting_vm ? ` · ${c.waiting_vm} waiting for a Meta VM (retried every 10 min)` : '') +
     (c.canceled ? ` · ${c.canceled} canceled` : '') +
     (batch.invalid_lines?.length ? ` · ignored lines without hatch_sess: ${batch.invalid_lines.join(', ')}` : '');
-  document.getElementById('btnCancelBulkImport').style.display = c.queued ? 'inline-flex' : 'none';
+  document.getElementById('btnCancelBulkImport').style.display = (c.queued || c.waiting_vm) ? 'inline-flex' : 'none';
   document.getElementById('bulkImportItems').innerHTML = (batch.items || []).map((it) => `
     <tr>
       <td>${it.index + 1}</td>
@@ -971,7 +973,7 @@ async function loadBulkImportHistory() {
       const c = b.counts || {};
       return `<div style="display: flex; justify-content: space-between; padding: 4px 0; border-top: 1px solid var(--border-subtle);">
         <a href="#" class="font-mono" onclick="openBulkImportBatch('${escapeJsAttr(b.id)}'); return false;">${escapeHtml(b.id)}</a>
-        <span>${formatDate(b.created_at)} · ${b.total} cookies · ${c.done || 0} done · ${c.failed || 0} failed · ${(c.queued || 0) + (c.processing || 0)} pending</span>
+        <span>${formatDate(b.created_at)} · ${b.total} cookies · ${c.done || 0} done · ${c.failed || 0} failed · ${(c.queued || 0) + (c.processing || 0) + (c.waiting_vm || 0)} pending</span>
       </div>`;
     }).join('');
   } catch (err) {

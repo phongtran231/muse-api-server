@@ -29,6 +29,11 @@ const BATCHES_KEY = 'muse:import:batches';
 const SEQ_KEY = (prefix) => `muse:import:seq:${prefix}`;
 const LIST_LIMIT = 20;
 const PROXY_CHECK_TIMEOUT_MS = 15000;
+// Meta answers /api/session with status "unavailable" (no VM) for some fresh
+// accounts; provisioning can take a while, so such items are retried later.
+const NO_VM_RETRIES = 2;
+const NO_VM_RETRY_DELAY_MS = 10 * 60 * 1000;
+const NO_VM_RE = /VM info returned null|status: unavailable|VM is still starting/i;
 
 let redis = null;
 let queue = null;
@@ -149,7 +154,7 @@ async function startAccountImport() {
   worker.on('failed', (job, err) => {
     if (!job?.data?.batchId) return;
     getItem(job.data.batchId, job.data.index).then((item) => {
-      if (!item || !['queued', 'processing'].includes(item.status)) return null;
+      if (!item || !['queued', 'processing', 'waiting_vm'].includes(item.status)) return null;
       return setItem(job.data.batchId, { ...item, status: 'failed', error: sanitize(err?.message || 'Import job failed').slice(0, 500), finished_at: new Date().toISOString() });
     }).catch(() => {});
   });
@@ -318,7 +323,7 @@ function withTimeout(promise, ms) {
 }
 
 async function processItem(job) {
-  const { batchId, index, name, email, cookie, proxy, validate, use_browser } = job.data;
+  const { batchId, index, name, email, cookie, proxy, validate, use_browser, retries = 0 } = job.data;
   const item = await getItem(batchId, index);
   if (!item || item.status === 'canceled') return;
   item.status = 'processing';
@@ -350,15 +355,31 @@ async function processItem(job) {
       }
     }
   } catch (err) {
-    Object.assign(item, { status: 'failed', error: sanitize(err.message || String(err)).slice(0, 500) });
-    log.warn({ batch: batchId, index, name, err: item.error }, 'Account import failed');
+    const message = sanitize(err.message || String(err));
+    if (NO_VM_RE.test(message) && retries < NO_VM_RETRIES) {
+      const jobId = `${batchId}-${index}-r${retries + 1}`;
+      await queue.add('import', { ...job.data, retries: retries + 1 }, { jobId, delay: NO_VM_RETRY_DELAY_MS, removeOnComplete: true, removeOnFail: true });
+      Object.assign(item, {
+        status: 'waiting_vm',
+        job_id: jobId,
+        error: `Meta has not assigned a VM to this account yet. Retrying in ${NO_VM_RETRY_DELAY_MS / 60000} min (retry ${retries + 1}/${NO_VM_RETRIES}).`
+      });
+      log.info({ batch: batchId, index, name, retry: retries + 1 }, 'No VM assigned yet; import retry scheduled');
+      await setItem(batchId, item);
+      return;
+    }
+    const hint = NO_VM_RE.test(message)
+      ? `Meta never assigned a VM to this account (status "unavailable" after ${NO_VM_RETRIES} retries). Log in to muse.ai with it in a browser: it may not be activated for Muse or may be restricted.`
+      : message;
+    Object.assign(item, { status: 'failed', error: hint.slice(0, 500) });
+    log.warn({ batch: batchId, index, name, err: message.slice(0, 300) }, 'Account import failed');
   }
   item.finished_at = new Date().toISOString();
   await setItem(batchId, item);
 }
 
 function summarize(items) {
-  const counts = { queued: 0, processing: 0, done: 0, failed: 0, skipped: 0, canceled: 0 };
+  const counts = { queued: 0, processing: 0, waiting_vm: 0, done: 0, failed: 0, skipped: 0, canceled: 0 };
   for (const item of items) counts[item.status] = (counts[item.status] || 0) + 1;
   return counts;
 }
@@ -393,8 +414,8 @@ async function listBatches() {
 async function cancelBatch(batchId) {
   const batch = await getBatch(batchId);
   for (const item of batch.items) {
-    if (item.status !== 'queued') continue;
-    const job = await queue.getJob(`${batchId}-${item.index}`);
+    if (!['queued', 'waiting_vm'].includes(item.status)) continue;
+    const job = await queue.getJob(item.job_id || `${batchId}-${item.index}`);
     if (job && !(await job.isActive())) await job.remove().catch(() => {});
     item.status = 'canceled';
     await setItem(batchId, item);
