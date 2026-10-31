@@ -739,3 +739,14 @@ test('bulk import parses cookies, spreads proxies by load and continues name num
   assert.equal(imp.maxNameNumber('acc', ['acc1', 'ACC12', 'ac3', 'acc', 'acc7x']), 12);
   assert.equal(imp.maxNameNumber('a.c', ['abc5', 'a.c2']), 2);
 });
+
+test('bulk import reads "email|code|password|cookie|" lines without keeping the password', () => {
+  const { parseCookieLines } = require('../src/services/accountImport');
+  const line = 'user1@example.com|ABC123|p@ss|word!#|wd=1366x900; datr=x; hatch_sess=12345678-aaaa.v1%3Axyz.sig|';
+  const { cookies, invalid } = parseCookieLines(`${line}\nuser2@example.com|ABC|nocookie|\n`);
+  assert.deepEqual(invalid, [2]);
+  assert.equal(cookies.length, 1);
+  assert.equal(cookies[0].email, 'user1@example.com');
+  assert.equal(cookies[0].cookie, 'wd=1366x900; datr=x; hatch_sess=12345678-aaaa.v1%3Axyz.sig');
+  assert.ok(!cookies[0].cookie.includes('p@ss') && !cookies[0].cookie.includes('ABC123'));
+});

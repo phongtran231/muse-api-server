@@ -65,7 +65,10 @@ async function onboardAccount(body) {
       image: clampConcurrency(body.concurrency?.image),
       video: clampConcurrency(body.concurrency?.video)
     },
-    metadata: sessionId ? { session_id: sessionId } : {}
+    metadata: {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...(body.email ? { email: String(body.email).slice(0, 200) } : {})
+    }
   });
 
   let test = null;

@@ -860,7 +860,7 @@ function renderBulkImport(batch) {
     <tr>
       <td>${it.index + 1}</td>
       <td>${it.line}</td>
-      <td class="font-mono">${escapeHtml(it.session || '-')}</td>
+      <td class="font-mono" style="font-size: 11px;">${escapeHtml(it.email || it.session || '-')}</td>
       <td>${escapeHtml(it.name || '-')}</td>
       <td class="font-mono" style="font-size: 11px;">${escapeHtml(it.proxy || 'direct')}</td>
       <td><span class="badge ${BULK_STATUS_BADGE[it.status] || ''}">${escapeHtml(it.status)}</span></td>

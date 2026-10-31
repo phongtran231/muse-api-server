@@ -37,16 +37,30 @@ let worker = null;
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
-/** One cookie per line; lines without hatch_sess= are reported as invalid. */
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/**
+ * One account per line: either a bare cookie, or "|"-separated fields as sold
+ * by account shops ("email|code|password|cookie|"). Only the field holding
+ * hatch_sess= is used as the cookie and an email field is kept as a label;
+ * every other field (passwords, 2FA codes) is dropped and never stored.
+ * Lines without hatch_sess= are reported as invalid.
+ */
 function parseCookieLines(text) {
   const cookies = [];
   const invalid = [];
   String(text || '').split(/\r?\n/).forEach((raw, i) => {
-    let line = raw.trim();
+    const line = raw.trim();
     if (!line) return;
-    if (/^cookie:/i.test(line)) line = line.slice(7).trim();
-    if (/hatch_sess=/.test(line)) cookies.push({ line: i + 1, cookie: line });
-    else invalid.push(i + 1);
+    const fields = line.split('|').map((f) => f.trim()).filter(Boolean);
+    let cookie = fields.find((f) => /hatch_sess=/.test(f));
+    if (!cookie) {
+      invalid.push(i + 1);
+      return;
+    }
+    if (/^cookie:/i.test(cookie)) cookie = cookie.slice(7).trim();
+    const email = fields.find((f) => EMAIL_RE.test(f)) || null;
+    cookies.push({ line: i + 1, cookie, email });
   });
   return { cookies, invalid };
 }
@@ -214,9 +228,9 @@ async function createBatch(input) {
   const knownSessions = existingSessionIds(accounts);
   const items = [];
   const toQueue = [];
-  for (const { line, cookie } of cookies) {
+  for (const { line, cookie, email } of cookies) {
     const sid = sessionIdOf(cookie);
-    const item = { index: items.length, line, session: sid ? sid.slice(0, 8) : null, name: null, proxy: null, status: 'queued', error: null, account_id: null };
+    const item = { index: items.length, line, email, session: sid ? sid.slice(0, 8) : null, name: null, proxy: null, status: 'queued', error: null, account_id: null };
     if (sid && knownSessions.has(sid)) {
       item.status = 'skipped';
       item.error = 'Duplicate: this session (hatch_sess) is already an account or appears earlier in the batch.';
@@ -262,7 +276,7 @@ async function createBatch(input) {
 
   await queue.addBulk(toQueue.map(({ item, cookie, proxy }) => ({
     name: 'import',
-    data: { batchId, index: item.index, name: item.name, cookie, proxy, validate: meta.validate, use_browser: Boolean(input.use_browser) },
+    data: { batchId, index: item.index, name: item.name, email: item.email, cookie, proxy, validate: meta.validate, use_browser: Boolean(input.use_browser) },
     // Cookies must not linger in Redis once processed.
     opts: { jobId: `${batchId}-${item.index}`, removeOnComplete: true, removeOnFail: true }
   })));
@@ -299,7 +313,7 @@ function withTimeout(promise, ms) {
 }
 
 async function processItem(job) {
-  const { batchId, index, name, cookie, proxy, validate, use_browser } = job.data;
+  const { batchId, index, name, email, cookie, proxy, validate, use_browser } = job.data;
   const item = await getItem(batchId, index);
   if (!item || item.status === 'canceled') return;
   item.status = 'processing';
@@ -313,7 +327,7 @@ async function processItem(job) {
       Object.assign(item, { status: 'skipped', error: 'Duplicate: this session (hatch_sess) is already an account.' });
     } else {
       await checkProxy(proxy);
-      const onboarding = onboardAccount({ name, cookie, proxy, validate, use_browser });
+      const onboarding = onboardAccount({ name, email, cookie, proxy, validate, use_browser });
       try {
         const { account, test } = await withTimeout(onboarding, config.accountImport.itemTimeoutMs);
         Object.assign(item, { status: 'done', account_id: account._id, latency_ms: test?.latency_ms ?? null });
