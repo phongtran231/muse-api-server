@@ -29,6 +29,30 @@ const router = express.Router();
 
 const publicAdminDir = path.resolve(__dirname, '..', '..', 'public', 'admin');
 
+/**
+ * Serves an admin HTML page with /admin/dashboard.{js,css} URLs versioned by
+ * content hash. Cloudflare rewrites asset caching to hours, so a fixed
+ * "?v=" left browsers on stale JS after a deploy.
+ */
+const adminPageCache = new Map();
+function sendAdminPage(res, file) {
+  const fs = require('node:fs');
+  const { createHash } = require('node:crypto');
+  const htmlPath = path.join(publicAdminDir, file);
+  const assets = ['dashboard.js', 'dashboard.css'].map((name) => path.join(publicAdminDir, name));
+  const stamp = [htmlPath, ...assets].map((p) => fs.statSync(p).mtimeMs).join(':');
+  let cached = adminPageCache.get(file);
+  if (!cached || cached.stamp !== stamp) {
+    const version = (name) => createHash('sha256').update(fs.readFileSync(path.join(publicAdminDir, name))).digest('hex').slice(0, 12);
+    const html = fs.readFileSync(htmlPath, 'utf8')
+      .replace(/\/admin\/(dashboard\.(?:js|css))(\?v=[^"']*)?/g, (_, name) => `/admin/${name}?v=${version(name)}`);
+    cached = { stamp, html };
+    adminPageCache.set(file, cached);
+  }
+  res.setHeader('Cache-Control', 'no-cache');
+  res.type('html').send(cached.html);
+}
+
 // ===========================================================================
 // Public UI & Auth
 // ===========================================================================
@@ -42,7 +66,7 @@ router.get(['/login', '/login.html'], (req, res) => {
       return res.redirect('/admin');
     }
   }
-  res.sendFile(path.join(publicAdminDir, 'login.html'));
+  sendAdminPage(res, 'login.html');
 });
 
 // Authenticate via Master Admin Key and issue secure session cookie
@@ -92,7 +116,7 @@ router.post('/api/auth/logout', (req, res) => {
 // ===========================================================================
 
 router.get(['/', '', '/index.html'], requireDashboardAuth, (req, res) => {
-  res.sendFile(path.join(publicAdminDir, 'index.html'));
+  sendAdminPage(res, 'index.html');
 });
 
 // ===========================================================================
