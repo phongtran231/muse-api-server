@@ -862,6 +862,21 @@ document.getElementById('formProxyPool')?.addEventListener('submit', async (e) =
   }
 });
 
+document.getElementById('btnCheckProxyPool')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  try {
+    await api('/proxy-pool/check', { method: 'POST' });
+    await loadProxyPool();
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Check now';
+  }
+});
+
 document.getElementById('btnAssignProxyPool')?.addEventListener('click', async () => {
   try {
     const res = await api('/proxy-pool/assign-all', { method: 'POST' });

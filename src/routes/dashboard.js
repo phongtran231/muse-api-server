@@ -393,6 +393,15 @@ router.put('/api/proxy-pool', async (req, res, next) => {
   }
 });
 
+router.post('/api/proxy-pool/check', async (req, res, next) => {
+  try {
+    await proxyPool.checkAll();
+    res.json({ status: proxyPool.status() });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Points every account at the pool; each reconnects with a random pool proxy.
 router.post('/api/proxy-pool/assign-all', async (req, res, next) => {
   try {

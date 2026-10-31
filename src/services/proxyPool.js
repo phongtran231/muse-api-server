@@ -51,7 +51,8 @@ function parse(input) {
 function label(proxy) {
   try {
     const u = new URL(proxy);
-    return `${u.hostname}:${u.port}${u.username ? ` (${decodeURIComponent(u.username)})` : ''}`;
+    const port = u.port || ({ 'http:': '80', 'https:': '443' }[u.protocol] || '1080');
+    return `${u.hostname}:${port}${u.username ? ` (${decodeURIComponent(u.username)})` : ''}`;
   } catch (e) {
     return 'invalid';
   }
@@ -87,9 +88,25 @@ async function checkOne(proxy) {
   }
 }
 
-async function checkAll() {
-  await Promise.all(proxies.map(checkOne));
-  for (const key of [...health.keys()]) if (!proxies.includes(key)) health.delete(key);
+let checking = null;
+let recheck = false;
+
+/** Checks every entry. Runs are serialized so a failure is never counted twice by overlapping runs. */
+function checkAll() {
+  if (checking) {
+    recheck = true; // the list may have changed: run once more after the current run
+    return checking;
+  }
+  checking = (async () => {
+    do {
+      recheck = false;
+      await Promise.all(proxies.map(checkOne));
+      for (const key of [...health.keys()]) if (!proxies.includes(key)) health.delete(key);
+    } while (recheck);
+  })().finally(() => {
+    checking = null;
+  });
+  return checking;
 }
 
 function apply(next) {
