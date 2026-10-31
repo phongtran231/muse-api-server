@@ -313,7 +313,8 @@ async function loadAccounts() {
       }
       const connBadge = isConnected 
         ? '<span style="color: #34D399; font-weight: 600;">CONNECTED</span>'
-        : (isRenewing ? '<span style="color: #F59E0B; font-weight: 600;">RENEWING</span>' : '<span style="color: var(--text-dim);">STANDBY</span>');
+        : (isRenewing ? '<span style="color: #F59E0B; font-weight: 600;">RENEWING</span>'
+          : (a.live?.sleeping ? '<span style="color: #818CF8; font-weight: 600;" title="Meta suspended the idle VM; it is woken when a job needs this account">SLEEPING</span>' : '<span style="color: var(--text-dim);">STANDBY</span>'));
 
       const caps = [];
       if (a.capabilities?.chat) caps.push('<span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #818CF8;">Chat</span>');
@@ -825,6 +826,153 @@ function previewMedia(url, mimeType, prompt) {
 // ===========================================================================
 
 document.getElementById('openAddAccountBtn')?.addEventListener('click', () => openModal('modalAddAccount'));
+
+// ---------------------------------------------------------------------------
+// Bulk import (cookies -> Redis queue -> one account at a time)
+// ---------------------------------------------------------------------------
+let bulkImportBatchId = null;
+let bulkImportTimer = null;
+
+const BULK_STATUS_BADGE = {
+  queued: 'badge-queued',
+  processing: 'badge-running',
+  done: 'badge-succeeded',
+  failed: 'badge-failed',
+  skipped: 'badge-offline',
+  canceled: 'badge-offline'
+};
+
+function countCookieLines(text) {
+  return text.split(/\r?\n/).filter((l) => /hatch_sess=/.test(l)).length;
+}
+
+function renderBulkImport(batch) {
+  document.getElementById('bulkImportProgress').style.display = 'block';
+  const c = batch.counts || {};
+  const pending = (c.queued || 0) + (c.processing || 0);
+  document.getElementById('bulkImportTitle').textContent = `Batch ${batch.id} · ${formatDate(batch.created_at)} · every ${batch.interval_sec}s`;
+  document.getElementById('bulkImportCounts').textContent =
+    `${c.done || 0} done · ${c.failed || 0} failed · ${c.skipped || 0} skipped · ${c.processing || 0} processing · ${c.queued || 0} queued` +
+    (c.canceled ? ` · ${c.canceled} canceled` : '') +
+    (batch.invalid_lines?.length ? ` · ignored lines without hatch_sess: ${batch.invalid_lines.join(', ')}` : '');
+  document.getElementById('btnCancelBulkImport').style.display = c.queued ? 'inline-flex' : 'none';
+  document.getElementById('bulkImportItems').innerHTML = (batch.items || []).map((it) => `
+    <tr>
+      <td>${it.index + 1}</td>
+      <td>${it.line}</td>
+      <td class="font-mono">${escapeHtml(it.session || '-')}</td>
+      <td>${escapeHtml(it.name || '-')}</td>
+      <td class="font-mono" style="font-size: 11px;">${escapeHtml(it.proxy || 'direct')}</td>
+      <td><span class="badge ${BULK_STATUS_BADGE[it.status] || ''}">${escapeHtml(it.status)}</span></td>
+      <td style="font-size: 11px; max-width: 280px; white-space: normal;">${escapeHtml(it.error || (it.account_id ? it.account_id : ''))}</td>
+    </tr>`).join('');
+  return pending;
+}
+
+async function pollBulkImport() {
+  if (!bulkImportBatchId) return;
+  try {
+    const batch = await api(`/accounts/import/${bulkImportBatchId}`);
+    const pending = renderBulkImport(batch);
+    if (pending === 0) {
+      stopBulkImportPolling();
+      loadAccounts();
+      loadBulkImportHistory();
+    }
+  } catch (err) {
+    stopBulkImportPolling();
+    showToast(err.message, 'error');
+  }
+}
+
+function startBulkImportPolling() {
+  stopBulkImportPolling();
+  bulkImportTimer = setInterval(pollBulkImport, 3000);
+  pollBulkImport();
+}
+
+function stopBulkImportPolling() {
+  if (bulkImportTimer) clearInterval(bulkImportTimer);
+  bulkImportTimer = null;
+}
+
+async function loadBulkImportHistory() {
+  const box = document.getElementById('bulkImportHistory');
+  try {
+    const res = await api('/accounts/import');
+    document.getElementById('bulkImportDisabled').style.display = res.enabled ? 'none' : 'block';
+    document.getElementById('btnSubmitBulkImport').disabled = !res.enabled;
+    if (!res.data?.length) {
+      box.innerHTML = '';
+      return;
+    }
+    box.innerHTML = '<div style="font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Recent batches</div>' + res.data.map((b) => {
+      const c = b.counts || {};
+      return `<div style="display: flex; justify-content: space-between; padding: 4px 0; border-top: 1px solid var(--border-subtle);">
+        <a href="#" class="font-mono" onclick="openBulkImportBatch('${escapeJsAttr(b.id)}'); return false;">${escapeHtml(b.id)}</a>
+        <span>${formatDate(b.created_at)} · ${b.total} cookies · ${c.done || 0} done · ${c.failed || 0} failed · ${(c.queued || 0) + (c.processing || 0)} pending</span>
+      </div>`;
+    }).join('');
+  } catch (err) {
+    box.textContent = err.message;
+  }
+}
+
+window.openBulkImportBatch = function(id) {
+  bulkImportBatchId = id;
+  startBulkImportPolling();
+};
+
+document.getElementById('openBulkImportBtn')?.addEventListener('click', () => {
+  openModal('modalBulkImport');
+  loadBulkImportHistory();
+  if (bulkImportBatchId) startBulkImportPolling();
+});
+
+document.getElementById('bulkCookies')?.addEventListener('input', (e) => {
+  document.getElementById('bulkCookieCount').textContent = `${countCookieLines(e.target.value)} cookies`;
+});
+
+document.getElementById('formBulkImport')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('btnSubmitBulkImport');
+  btn.disabled = true;
+  btn.textContent = 'Queueing...';
+  try {
+    const batch = await api('/accounts/import', {
+      method: 'POST',
+      body: {
+        cookies: document.getElementById('bulkCookies').value,
+        proxies: document.getElementById('bulkProxies').value,
+        prefix: document.getElementById('bulkPrefix').value.trim(),
+        validate: document.getElementById('bulkValidate').checked,
+        use_browser: document.getElementById('bulkUseBrowser').checked
+      }
+    });
+    const queued = batch.counts?.queued || 0;
+    showToast(`Queued ${queued} account(s)${batch.counts?.skipped ? `, skipped ${batch.counts.skipped} duplicate(s)` : ''}.`, 'success');
+    document.getElementById('bulkCookies').value = '';
+    document.getElementById('bulkCookieCount').textContent = '0 cookies';
+    bulkImportBatchId = batch.id;
+    renderBulkImport(batch);
+    startBulkImportPolling();
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Queue Import';
+  }
+});
+
+document.getElementById('btnCancelBulkImport')?.addEventListener('click', async () => {
+  if (!bulkImportBatchId) return;
+  try {
+    renderBulkImport(await api(`/accounts/import/${bulkImportBatchId}/cancel`, { method: 'POST' }));
+    showToast('Remaining items canceled.', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+});
 document.getElementById('btnRecoverAllAccounts')?.addEventListener('click', async () => {
   const btn = document.getElementById('btnRecoverAllAccounts');
   const originalHtml = btn.innerHTML;

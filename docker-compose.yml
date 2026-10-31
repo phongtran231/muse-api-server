@@ -1,4 +1,4 @@
-# Local / single-host deployment: API + MongoDB.
+# Local / single-host deployment: API + MongoDB + Redis (bulk account import queue).
 #   cp .env.example .env   # set ADMIN_API_KEY, SIGNING_SECRET, PUBLIC_BASE_URL
 #   docker compose up -d --build
 services:
@@ -9,6 +9,7 @@ services:
     env_file: .env
     environment:
       MONGODB_URI: mongodb://mongo:27017/muse_api
+      REDIS_URL: redis://redis:6379
       STORAGE_DIR: /data/storage
     ports:
       - "8080:8080"
@@ -16,6 +17,8 @@ services:
       - api-storage:/data/storage
     depends_on:
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     stop_grace_period: 45s
     logging:
@@ -36,6 +39,20 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF so queued imports survive a restart; noeviction because BullMQ needs every key.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   api-storage:
   mongo-data:
+  redis-data:

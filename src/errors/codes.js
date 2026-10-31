@@ -101,7 +101,8 @@ const ErrorCodes = Object.freeze({
   QUEUE_TIMEOUT: { status: 503, type: T.SERVICE_UNAVAILABLE, code: 'queue_timeout', message: 'The job waited in the queue longer than the maximum allowed time.' },
   JOB_INTERRUPTED: { status: 503, type: T.SERVICE_UNAVAILABLE, code: 'job_interrupted', message: 'The job was interrupted by a server restart and exhausted its retry attempts.' },
   SERVICE_SHUTTING_DOWN: { status: 503, type: T.SERVICE_UNAVAILABLE, code: 'service_shutting_down', message: 'The server is shutting down. Retry against another instance.' },
-  DATABASE_UNAVAILABLE: { status: 503, type: T.SERVICE_UNAVAILABLE, code: 'database_unavailable', message: 'The database is temporarily unavailable.' }
+  DATABASE_UNAVAILABLE: { status: 503, type: T.SERVICE_UNAVAILABLE, code: 'database_unavailable', message: 'The database is temporarily unavailable.' },
+  IMPORT_UNAVAILABLE: { status: 503, type: T.SERVICE_UNAVAILABLE, code: 'import_unavailable', message: 'Bulk account import needs Redis. Set REDIS_URL and restart the server.' }
 });
 
 /** Lookup table: code string -> definition (used to rehydrate stored job errors). */

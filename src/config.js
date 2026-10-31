@@ -254,6 +254,21 @@ const config = Object.freeze({
     block_message: str('CHAT_GUARD_MESSAGE', 'This chat endpoint is text-only. Use POST /v1/images/generations or POST /v1/videos/generations to create media.')
   }),
 
+  // Redis backs the bulk account import queue (optional; import is disabled without it).
+  redis: Object.freeze({
+    url: str('REDIS_URL', '')
+  }),
+
+  accountImport: Object.freeze({
+    // Pause between two imported accounts, so a batch does not burst requests to Meta.
+    intervalMs: int('ACCOUNT_IMPORT_INTERVAL_SEC', 20, { min: 0, max: 3600 }) * 1000,
+    // Batch status (no cookies) is kept this long in Redis.
+    retentionSec: int('ACCOUNT_IMPORT_RETENTION_HOURS', 168, { min: 1, max: 24 * 90 }) * 3600,
+    maxPerBatch: int('ACCOUNT_IMPORT_MAX_PER_BATCH', 500, { min: 1, max: 10000 }),
+    // One account may not hold the queue longer than this (dead proxies retry for minutes).
+    itemTimeoutMs: int('ACCOUNT_IMPORT_ITEM_TIMEOUT_SEC', 240, { min: 30, max: 3600 }) * 1000
+  }),
+
   logging: Object.freeze({
     level: str('LOG_LEVEL', nodeEnv === 'production' ? 'info' : 'debug'),
     // Upstream library logs (console.*) are noisy; mirror them at this level.

@@ -19,6 +19,8 @@ const { createAdminSession, parseCookies } = require('../utils/adminSession');
 const { safeEqual, generateApiKey, sha256 } = require('../utils/crypto');
 const { requireDashboardAuth } = require('../middleware/dashboardAuth');
 const { serializeAccount, serializeApiKey, serializeJob } = require('../serializers');
+const { onboardAccount } = require('../services/accounts');
+const accountImport = require('../services/accountImport');
 const { logger, sanitize } = require('../logger');
 const { ApiError, ErrorCodes } = require('../errors');
 
@@ -339,66 +341,48 @@ router.get('/api/accounts', async (req, res, next) => {
 // Create account
 router.post('/api/accounts', async (req, res, next) => {
   try {
+    const { account, test } = await onboardAccount(req.body || {});
+    res.status(201).json({ ...serializeAccount(account, pool.snapshot().accounts[account._id]), test });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Bulk import: queue many cookies, onboarded one at a time (Redis queue).
+router.post('/api/accounts/import', async (req, res, next) => {
+  try {
     const body = req.body || {};
-    const name = String(body.name || '').trim();
-    if (!name) throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'Account name is required.' });
+    res.status(202).json(await accountImport.createBatch({
+      cookies: body.cookies,
+      proxies: body.proxies,
+      prefix: body.prefix,
+      validate: body.validate !== false,
+      use_browser: Boolean(body.use_browser)
+    }));
+  } catch (err) {
+    next(err);
+  }
+});
 
-    const result = await composeCredentialAsync(
-      {
-        wss_url: body.wss_url,
-        cookie: body.cookie,
-        cookie_string: body.credential,
-        proxy: normalizeProxy(body.proxy),
-        preferBrowser: Boolean(body.use_browser)
-      }
-    );
+router.get('/api/accounts/import', async (req, res, next) => {
+  try {
+    res.json({ enabled: accountImport.isEnabled(), data: accountImport.isEnabled() ? await accountImport.listBatches() : [] });
+  } catch (err) {
+    next(err);
+  }
+});
 
-    if (result.error) {
-      throw new ApiError(ErrorCodes.CREDENTIAL_INVALID, { message: sanitize(result.error) });
-    }
+router.get('/api/accounts/import/:id', async (req, res, next) => {
+  try {
+    res.json(await accountImport.getBatch(req.params.id));
+  } catch (err) {
+    next(err);
+  }
+});
 
-    const info = describeCredential(result.value);
-    const group = body.group !== undefined && body.group !== '' ? String(body.group).trim() : config.pool.group;
-    const doc = await Account.create({
-      name,
-      credential: result.value,
-      credential_type: info.type,
-      wss_expires_at: info.wss_expires_at ? new Date(info.wss_expires_at) : null,
-      proxy: normalizeProxy(body.proxy),
-      group,
-      enabled: body.enabled !== false,
-      capabilities: {
-        chat: body.capabilities?.chat !== false,
-        image: body.capabilities?.image !== false,
-        video: body.capabilities?.video !== false
-      },
-      concurrency: {
-        chat: body.concurrency?.chat ? Math.max(1, Math.min(2000, parseInt(body.concurrency.chat, 10))) : null,
-        image: body.concurrency?.image ? Math.max(1, Math.min(2000, parseInt(body.concurrency.image, 10))) : null,
-        video: body.concurrency?.video ? Math.max(1, Math.min(2000, parseInt(body.concurrency.video, 10))) : null
-      }
-    });
-
-    let test = null;
-    if (group === config.pool.group) {
-      await pool.reload(doc._id);
-
-      // Live validation if requested
-      if (body.validate !== false && doc.enabled) {
-        test = await pool.test(doc._id);
-        if (!test.ok) {
-          await Account.deleteOne({ _id: doc._id });
-          pool.remove(doc._id);
-          throw new ApiError(ErrorCodes.CREDENTIAL_INVALID, {
-            message: `The credential could not establish an upstream connection: ${test.error?.message || 'unknown error'}`,
-            details: { test }
-          });
-        }
-      }
-    }
-
-    const fresh = await Account.findById(doc._id).select('+credential +proxy').lean();
-    res.status(201).json({ ...serializeAccount(fresh, pool.snapshot().accounts[doc._id]), test });
+router.post('/api/accounts/import/:id/cancel', async (req, res, next) => {
+  try {
+    res.json(await accountImport.cancelBatch(req.params.id));
   } catch (err) {
     next(err);
   }

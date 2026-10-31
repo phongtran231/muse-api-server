@@ -719,3 +719,23 @@ test('background reconnects leave a sleeping VM alone; a job wakes it', async ()
   assert.equal(entry.sleeping, false);
   assert.equal(renewCalls.at(-1), false);
 });
+
+test('bulk import parses cookies, spreads proxies by load and continues name numbering', () => {
+  const imp = require('../src/services/accountImport');
+  const { cookies, invalid } = imp.parseCookieLines('datr=a; hatch_sess=11111111-aaaa.v1%3Ax\n\n  not a cookie\nCookie: hatch_sess=22222222-bbbb.v1; ps_n=0\n');
+  assert.deepEqual(cookies.map((c) => c.line), [1, 4]);
+  assert.equal(cookies[1].cookie, 'hatch_sess=22222222-bbbb.v1; ps_n=0');
+  assert.deepEqual(invalid, [3]);
+
+  const proxies = imp.parseProxyLines('1.1.1.1:80:u:p\nhttp://u:p@1.1.1.1:80\n2.2.2.2:80\n\n');
+  assert.deepEqual(proxies, ['http://u:p@1.1.1.1:80', 'http://2.2.2.2:80']);
+  assert.equal(imp.proxyHost(proxies[0]), '1.1.1.1:80');
+
+  // proxy A already has 2 accounts, B has 0 -> B, B, then alternate
+  const counts = new Map([['A', 2]]);
+  assert.deepEqual(imp.assignProxies(['A', 'B'], counts, 4), ['B', 'B', 'A', 'B']);
+  assert.deepEqual(imp.assignProxies([], counts, 2), [null, null]);
+
+  assert.equal(imp.maxNameNumber('acc', ['acc1', 'ACC12', 'ac3', 'acc', 'acc7x']), 12);
+  assert.equal(imp.maxNameNumber('a.c', ['abc5', 'a.c2']), 2);
+});
