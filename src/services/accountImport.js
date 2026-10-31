@@ -340,7 +340,7 @@ async function processItem(job) {
       const onboarding = onboardAccount({ name, email, cookie, proxy, validate, use_browser });
       try {
         const { account, test } = await withTimeout(onboarding, config.accountImport.itemTimeoutMs);
-        Object.assign(item, { status: 'done', account_id: account._id, latency_ms: test?.latency_ms ?? null });
+        Object.assign(item, { status: 'done', error: null, account_id: account._id, latency_ms: test?.latency_ms ?? null });
         log.info({ batch: batchId, index, account: account._id, name }, 'Imported account');
       } catch (err) {
         if (err.code === 'IMPORT_TIMEOUT') {
