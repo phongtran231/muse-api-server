@@ -273,7 +273,7 @@ async function loadOverview() {
         <tr>
           <td class="font-mono" style="font-size: 11px;">${escapeHtml(j.id)}</td>
           <td><span class="badge ${j.type === 'video' ? 'badge-running' : 'badge-online'}">${j.type}</span></td>
-          <td><span class="badge badge-${j.status}">${j.status}</span></td>
+          <td><span class="badge badge-${j.status}">${j.status}</span>${jobErrorHtml(j)}</td>
           <td>
             <div style="display: flex; align-items: center; gap: 8px;">
               <div class="progress-track" style="width: 70px;">
@@ -419,13 +419,13 @@ async function loadJobs() {
 
       const cancelBtn = (j.status === 'queued' || j.status === 'running')
         ? `<button class="btn btn-danger btn-sm" onclick="cancelJob('${escapeJsAttr(j.id)}')">Cancel</button>`
-        : '';
+        : (j.error ? `<button class="btn btn-secondary btn-sm" onclick="showJobError('${escapeJsAttr(j.id)}')">Why?</button>` : '');
 
       return `
         <tr>
           <td class="font-mono" style="font-size: 11px;">${escapeHtml(j.id)}</td>
           <td><span class="badge ${j.type === 'video' ? 'badge-running' : 'badge-online'}">${j.type}</span></td>
-          <td><span class="badge badge-${j.status}">${j.status}</span></td>
+          <td><span class="badge badge-${j.status}">${j.status}</span>${jobErrorHtml(j)}</td>
           <td>
             <div style="display: flex; align-items: center; gap: 8px;">
               <div class="progress-track" style="width: 70px;">
@@ -792,6 +792,40 @@ document.getElementById('btnCopySecretKey')?.addEventListener('click', () => {
 // ===========================================================================
 // Job Actions & Media Preview
 // ===========================================================================
+
+/** Short failure reason under a job's status badge; click it for the full details. */
+function jobErrorHtml(j) {
+  if (!j.error?.message) return '';
+  return `<div onclick="showJobError('${escapeJsAttr(j.id)}')" title="${escapeHtml(j.error.message)}" style="cursor: pointer; font-size: 10.5px; color: #FB7185; margin-top: 3px; max-width: 260px; white-space: normal; line-height: 1.35;">${escapeHtml(j.error.code ? `[${j.error.code}] ` : '')}${escapeHtml(j.error.message.length > 120 ? `${j.error.message.slice(0, 120)}…` : j.error.message)}</div>`;
+}
+
+async function showJobError(id) {
+  try {
+    const j = await api(`/jobs/${encodeURIComponent(id)}`);
+    const d = j.diagnostics || {};
+    const accountLabel = (a) => (a ? `${escapeHtml(a.name || '(deleted)')} <span class="font-mono" style="color: var(--text-dim);">${escapeHtml(a.id)}</span>` : '—');
+    const errorBlock = (e) => (e ? `<div class="font-mono" style="font-size: 12px; white-space: pre-wrap; word-break: break-word; background: rgba(251, 113, 133, 0.08); border: 1px solid rgba(251, 113, 133, 0.25); border-radius: 6px; padding: 10px;">${escapeHtml(e.code ? `[${e.code}]\n` : '')}${escapeHtml(e.message || '')}</div>` : '<span style="color: var(--text-dim);">—</span>');
+    const row = (label, value) => `<tr><td style="color: var(--text-muted); width: 170px; vertical-align: top;">${label}</td><td>${value}</td></tr>`;
+    document.getElementById('jobErrorBody').innerHTML = `
+      <div style="margin-bottom: 6px; font-size: 12px; color: var(--text-muted);">Error</div>
+      ${errorBlock(j.error)}
+      ${d.last_attempt_error ? `<div style="margin: 14px 0 6px; font-size: 12px; color: var(--text-muted);">Previous attempt error</div>${errorBlock(d.last_attempt_error)}` : ''}
+      <table style="width: 100%; margin-top: 14px; font-size: 12.5px;">
+        ${row('Job', `<span class="font-mono">${escapeHtml(j.id)}</span> · ${escapeHtml(j.type)} · <span class="badge badge-${j.status}">${escapeHtml(j.status)}</span>`)}
+        ${row('Last account', accountLabel(d.account))}
+        ${row('Accounts that failed it', d.failed_accounts?.length ? d.failed_accounts.map(accountLabel).join('<br>') : '—')}
+        ${row('Attempts', `${d.attempts ?? j.attempts ?? 0} / ${d.max_attempts ?? '?'}${d.transport_retries ? ` (+${d.transport_retries} re-queued after dropped connections)` : ''}`)}
+        ${row('Created', formatDate(j.created_at))}
+        ${row('Started', j.started_at ? formatDate(j.started_at) : '—')}
+        ${row('Finished', j.completed_at ? formatDate(j.completed_at) : '—')}
+        ${row('Node', d.node_id ? `<span class="font-mono">${escapeHtml(d.node_id)}</span>` : '—')}
+        ${row('Prompt', `<span style="white-space: pre-wrap;">${escapeHtml(j.prompt || '')}</span>`)}
+      </table>`;
+    openModal('modalJobError');
+  } catch (err) {
+    showToast(`Failed to load job details: ${err.message}`, 'error');
+  }
+}
 
 async function cancelJob(id) {
   if (!confirm(`Cancel job ${id}?`)) return;
@@ -1218,7 +1252,7 @@ function renderStudioImageQueue() {
     } else if (isDone) {
       statusHtml = `<span class="badge badge-succeeded">&#10003; Completed</span>`;
     } else {
-      statusHtml = `<span class="badge badge-failed" title="${escapeHtml(j.error?.message || '')}">${j.status === 'canceled' ? 'Canceled' : 'Failed'}</span>`;
+      statusHtml = `<span class="badge badge-failed" title="${escapeHtml(j.error?.message || '')}">${j.status === 'canceled' ? 'Canceled' : 'Failed'}</span>${jobErrorHtml(j)}`;
     }
 
     const ratio = j.params?.aspect_ratio || '1:1';
@@ -1501,7 +1535,7 @@ function renderStudioVideoQueue() {
     } else if (isDone) {
       statusHtml = `<span class="badge badge-succeeded">&#10003; Completed</span>`;
     } else {
-      statusHtml = `<span class="badge badge-failed" title="${escapeHtml(j.error?.message || '')}">${j.status === 'canceled' ? 'Canceled' : 'Failed'}</span>`;
+      statusHtml = `<span class="badge badge-failed" title="${escapeHtml(j.error?.message || '')}">${j.status === 'canceled' ? 'Canceled' : 'Failed'}</span>${jobErrorHtml(j)}`;
     }
 
     const ratio = j.params?.aspect_ratio || '16:9';

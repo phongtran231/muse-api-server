@@ -336,7 +336,7 @@ class Dispatcher extends EventEmitter {
 
     let outputFile = null;
     try {
-      const references = await this._loadReferences(job);
+      const { references, prompt } = this._dedupeReferences(job, await this._loadReferences(job));
       ctx.controller.signal.throwIfAborted();
 
       ctx.lease = await pool.acquire(job.type, { exclude: job.excluded_accounts || [], waitMs: ACQUIRE_WAIT_MS });
@@ -355,7 +355,7 @@ class Dispatcher extends EventEmitter {
       const timeout = config.jobs[job.type].timeoutMs;
       const onProgress = (text) => this._onProgress(ctx, text);
       const call = isVideo
-        ? ctx.lease.client.generateVideo(job.prompt, {
+        ? ctx.lease.client.generateVideo(prompt, {
           ref_images: references.images,
           ref_video: references.video,
           aspect_ratio: job.params?.aspect_ratio || undefined,
@@ -365,7 +365,7 @@ class Dispatcher extends EventEmitter {
           maxBytes: config.storage.maxVideoBytes,
           onProgress
         })
-        : ctx.lease.client.generateImage(job.prompt, {
+        : ctx.lease.client.generateImage(prompt, {
           ref_images: references.images,
           aspect_ratio: job.params?.aspect_ratio || undefined,
           timeout,
@@ -453,6 +453,31 @@ class Dispatcher extends EventEmitter {
     for (let i = 0; i < imageIds.length; i += 1) refs.images.push(await load(imageIds[i], `refs[${i}]`));
     if (job.reference?.video_file_id) refs.video = await load(job.reference.video_file_id, 'reference_video');
     return refs;
+  }
+
+  /**
+   * The model rejects a request that attaches the same image twice ("the first two
+   * reference images you sent are the exact same") with a text reply instead of a
+   * video. Sends each distinct image once and renumbers "[Reference Image n]" tags.
+   */
+  _dedupeReferences(job, references) {
+    const indexByData = new Map();
+    const images = [];
+    const newIndex = []; // original position -> 1-based position after dedupe
+    for (const img of references.images) {
+      if (!indexByData.has(img.data_base64)) {
+        images.push(img);
+        indexByData.set(img.data_base64, images.length);
+      }
+      newIndex.push(indexByData.get(img.data_base64));
+    }
+    if (images.length === references.images.length) return { references, prompt: job.prompt };
+    const prompt = job.prompt.replace(/\[Reference Image (\d+)\]/gi, (tag, n) => {
+      const mapped = newIndex[Number(n) - 1];
+      return mapped ? `[Reference Image ${mapped}]` : tag;
+    });
+    log.info({ job: job._id, sent: images.length, attached: references.images.length }, 'Duplicate reference images removed before sending');
+    return { references: { ...references, images }, prompt };
   }
 
   _onProgress(ctx, text) {

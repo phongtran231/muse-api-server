@@ -716,6 +716,28 @@ router.delete('/api/api-keys/:id', async (req, res, next) => {
 // Jobs Queue
 // ===========================================================================
 
+/** Account names for the accounts a job ran on or failed on (admin diagnostics). */
+async function accountNames(jobs) {
+  const ids = [...new Set(jobs.flatMap((j) => [j.account_id, ...(j.excluded_accounts || [])]).filter(Boolean))];
+  if (!ids.length) return {};
+  const docs = await Account.find({ _id: { $in: ids } }).select('name').lean();
+  return Object.fromEntries(docs.map((a) => [a._id, a.name]));
+}
+
+/** Admin-only failure details that the public job serializer leaves out. */
+function jobDiagnostics(job, names = {}) {
+  const account = (id) => (id ? { id, name: names[id] || null } : null);
+  return {
+    account: account(job.account_id),
+    failed_accounts: (job.excluded_accounts || []).map(account),
+    attempts: job.attempts || 0,
+    max_attempts: job.max_attempts || 0,
+    transport_retries: job.transport_retries || 0,
+    last_attempt_error: job.last_attempt_error?.code ? { code: job.last_attempt_error.code, message: job.last_attempt_error.message } : null,
+    node_id: job.node_id || null
+  };
+}
+
 // List Jobs
 router.get('/api/jobs', async (req, res, next) => {
   try {
@@ -725,7 +747,8 @@ router.get('/api/jobs', async (req, res, next) => {
     if (status) query.status = status;
 
     const docs = await Job.find(query).sort({ created_at: -1 }).limit(Math.min(100, Number(limit) || 50)).lean();
-    res.json(docs.map((j) => serializeJob(j)));
+    const names = await accountNames(docs);
+    res.json(docs.map((j) => ({ ...serializeJob(j), diagnostics: jobDiagnostics(j, names) })));
   } catch (err) {
     next(err);
   }
@@ -736,7 +759,7 @@ router.get('/api/jobs/:id', async (req, res, next) => {
   try {
     const job = await Job.findById(req.params.id).lean();
     if (!job) throw new ApiError(ErrorCodes.RESOURCE_NOT_FOUND, { message: 'Job not found' });
-    res.json(serializeJob(job));
+    res.json({ ...serializeJob(job), diagnostics: jobDiagnostics(job, await accountNames([job])) });
   } catch (err) {
     next(err);
   }

@@ -174,6 +174,13 @@ function collectRefImages(options = {}) {
   return [single, ...list].filter(Boolean);
 }
 
+// A media request can end with a text-only reply: the model declines ("I couldn't
+// generate that…"), reports a failed generation (e.g. duplicate reference images)
+// or asks a question. Such a turn never produces media, so waiting for it only
+// ends in a timeout. Progress messages ("Generating your clip…") do not match.
+const NO_MEDIA_REPLY_RE = /\b(couldn['’]?t|could not|can['’]?t|cannot|unable to|not able to|wasn['’]?t able|won['’]?t be able|failed|declin\w*|not allowed|against\b.*\bpolic\w*|safer version|instead\b.*\?|would you like|do you want|want me to|let me know)\b/i;
+const NO_MEDIA_REPLY_SETTLE_MS = 15000;
+
 /** Tells the model how attached images map to "[Reference Image n]" tags in the prompt. */
 function refImagesNote(count) {
   if (count === 1) {
@@ -181,6 +188,13 @@ function refImagesNote(count) {
   }
   const order = Array.from({ length: count }, (_, i) => `image #${i + 1} is [Reference Image ${i + 1}]`).join(', ');
   return `${count} reference images are attached in this order: ${order}. Whenever the request mentions [Reference Image n], it means the n-th attached image.`;
+}
+
+/** Error for a turn that ended without media; carries the model's own explanation when it gave one. */
+function noMediaError(what, text) {
+  const reply = String(text || '').replace(/\[\[hatch_widget:[^\]]*\]\]/g, '').trim();
+  if (!reply) return `The model did not produce ${what} for this request. Try again with a more specific prompt.`;
+  return `The model did not produce ${what}. Its reply: ${reply.length > 800 ? `${reply.slice(0, 800)}…` : reply}`;
 }
 
 class MuseClient extends EventEmitter {
@@ -1368,6 +1382,8 @@ class MuseClient extends EventEmitter {
       let pollTimer = null;
       let unchangedTicks = 0;
       let lastPolledText = '';
+      let noMediaReplyText = null;
+      let noMediaReplySince = 0;
       const callStartTime = Date.now();
       let polling = false;
 
@@ -1499,6 +1515,19 @@ class MuseClient extends EventEmitter {
                 if (unchangedTicks >= requiredTicks) {
                   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
                   finish(lastAssistant?.payload || {}, 'pollHistory_unchangedTicks_' + unchangedTicks);
+                }
+              } else if (options.waitForKind && !hasExpectedMedia()) {
+                // Text-only final reply (declined / failed / question): settle, then end the turn without media.
+                const lastText = lastAssistant?.display_text || lastAssistant?.payload?.content || '';
+                const isFinalReply = isAssistantCompleted && !hasActiveToolTask && NO_MEDIA_REPLY_RE.test(lastText);
+                if (!isFinalReply) {
+                  noMediaReplyText = null;
+                } else if (noMediaReplyText !== currentTurnText) {
+                  noMediaReplyText = currentTurnText;
+                  noMediaReplySince = Date.now();
+                } else if (Date.now() - noMediaReplySince >= NO_MEDIA_REPLY_SETTLE_MS) {
+                  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                  finish(lastAssistant?.payload || {}, 'pollHistory_text_reply_without_media');
                 }
               }
             } else if (options.waitForKind && hasExpectedMedia() && presentations.length > 0) {
@@ -1713,7 +1742,7 @@ class MuseClient extends EventEmitter {
       return {
         success: false,
         text: chatResult.text,
-        error: 'The model did not produce an image for this request.'
+        error: noMediaError('an image', chatResult.text)
       };
     }
 
@@ -1790,7 +1819,7 @@ class MuseClient extends EventEmitter {
       return {
         success: false,
         text: chatResult.text,
-        error: 'The model did not produce a video for this request. Try again with a more specific prompt.'
+        error: noMediaError('a video', chatResult.text)
       };
     }
 
