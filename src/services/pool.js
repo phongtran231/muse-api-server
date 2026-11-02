@@ -24,7 +24,7 @@
 const { EventEmitter } = require('events');
 const config = require('../config');
 const { logger, sanitize } = require('../logger');
-const { Account, CAPABILITIES, Setting } = require('../models');
+const { Account, CAPABILITIES, Setting, Job } = require('../models');
 const { MuseClient, fetchWssFromCookie } = require('../core/client');
 const { describeCredential, buildHybrid, resolveProxy = (p) => p || null } = require('../core/credentials');
 const { ApiError, ErrorCodes, classifyUpstreamError, isAccountLevelFailure } = require('../errors');
@@ -45,6 +45,9 @@ const RETIRE_CHECK_INTERVAL_MS = 5000;
 const RETIRE_MAX_WAIT_MS = 15 * 60 * 1000;
 // After waking a VM via Chromium it needs a few seconds before the WSS handshake succeeds.
 const VM_WAKE_CONNECT_ATTEMPTS = 4;
+// Accounts are balanced on how often they were used in this window, so every
+// account gets a share instead of the few whose VM happens to be awake.
+const RECENT_USE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const VM_WAKE_RETRY_DELAY_MS = 5000;
 
 /** host:port of a proxy URL for logs (never the credentials). */
@@ -130,6 +133,7 @@ class AccountPool extends EventEmitter {
     const docs = await Account.find({ group: config.pool.group }).select('+credential +proxy').lean();
     for (const doc of docs) this._upsertEntry(doc);
     log.info({ accounts: docs.length, group: config.pool.group || '(default)' }, 'Account pool initialized');
+    await this._loadRecentUses().catch((err) => log.warn({ err: err.message }, 'Failed to load 24h account usage; balancing starts from zero'));
 
     // Warm up connections in the background, staggered to avoid a thundering herd.
     let delay = 0;
@@ -214,16 +218,43 @@ class AccountPool extends EventEmitter {
       if (exclude.has(entry.id) || !this._supports(entry, capability) || !this._isHealthy(entry, now)) continue;
       const limit = this.limitFor(entry, capability);
       if (entry.active[capability] >= limit) continue;
-      // Least-loaded first; tie-break on total load, then least recently used.
+      // Least-loaded first, then fewest uses in the last 24h (spreads work over all
+      // accounts). An awake VM only wins between equally used accounts (waking adds
+      // latency), then least recently used.
       const totalActive = entry.active.chat + entry.active.image + entry.active.video;
-      // Prefer accounts whose VM is awake: waking a sleeping one adds latency.
-      const score = (entry.active[capability] / limit) * 1e6 + totalActive * 1e3 + (entry.sleeping ? 500 : 0) + entry.lastUsedAt / 1e13;
+      const score = (entry.active[capability] / limit) * 1e9
+        + totalActive * 1e6
+        + this._recentUseCount(entry, capability, now) * 10
+        + (entry.sleeping ? 5 : 0)
+        + entry.lastUsedAt / 1e13;
       if (score < bestScore) {
         best = entry;
         bestScore = score;
       }
     }
     return best;
+  }
+
+  _recentUseCount(entry, capability, now = Date.now()) {
+    const uses = entry.recentUses[capability];
+    while (uses.length && uses[0] <= now - RECENT_USE_WINDOW_MS) uses.shift();
+    return uses.length;
+  }
+
+  _recordUse(entry, capability, at = Date.now()) {
+    entry.lastUsedAt = Math.max(entry.lastUsedAt, at);
+    entry.recentUses[capability].push(at);
+  }
+
+  /** Seeds the 24h usage counts from the jobs that started in the window (survives restarts). */
+  async _loadRecentUses() {
+    const since = new Date(Date.now() - RECENT_USE_WINDOW_MS);
+    const jobs = await Job.find({ started_at: { $gte: since }, account_id: { $ne: null } }).select('account_id type started_at').sort({ started_at: 1 }).lean();
+    for (const job of jobs) {
+      const entry = this.entries.get(job.account_id);
+      if (entry && entry.recentUses[job.type]) this._recordUse(entry, job.type, new Date(job.started_at).getTime());
+    }
+    log.info({ jobs: jobs.length }, 'Loaded 24h account usage for load balancing');
   }
 
   /** Free slots across healthy accounts for a capability (used by the dispatcher). */
@@ -290,7 +321,7 @@ class AccountPool extends EventEmitter {
         signal?.throwIfAborted();
         const client = await this._ensureClient(entry, { wake: true });
         signal?.throwIfAborted();
-        entry.lastUsedAt = Date.now();
+        this._recordUse(entry, capability);
         return new Lease(this, entry, capability, client);
       } catch (err) {
         this._releaseSlot(entry, capability);
@@ -491,6 +522,7 @@ class AccountPool extends EventEmitter {
         failures: 0,
         cooldownUntil: 0,
         lastUsedAt: 0,
+        recentUses: { chat: [], image: [], video: [] },
         reconnectAttempts: 0,
         forceRefresh: false,
         removed: false,
@@ -1038,6 +1070,7 @@ class AccountPool extends EventEmitter {
         sleeping: Boolean(entry.sleeping),
         active: { ...entry.active },
         limits: { chat: this.limitFor(entry, 'chat'), image: this.limitFor(entry, 'image'), video: this.limitFor(entry, 'video') },
+        uses_24h: { chat: this._recentUseCount(entry, 'chat', now), image: this._recentUseCount(entry, 'image', now), video: this._recentUseCount(entry, 'video', now) },
         consecutive_failures: entry.failures,
         cooldown_until: entry.cooldownUntil > now && entry.cooldownUntil < Number.MAX_SAFE_INTEGER ? new Date(entry.cooldownUntil).toISOString() : null,
         is_renewing: Boolean(entry.isRenewing)
