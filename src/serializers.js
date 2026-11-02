@@ -95,6 +95,7 @@ function serializeAccount(doc, live = null) {
           sleeping: Boolean(live.sleeping),
           active: live.active,
           limits: live.limits,
+          uses_24h: live.uses_24h || null,
           consecutive_failures: live.consecutive_failures,
           cooldown_until: live.cooldown_until
         }

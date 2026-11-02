@@ -336,6 +336,7 @@ async function loadAccounts() {
             <span style="color: #F472B6; font-weight: 700;" title="Video Slots">🎬 ${a.concurrency?.video ?? 'Auto'}</span> | 
             <span style="color: #22D3EE; font-weight: 700;" title="Image Slots">🖼️ ${a.concurrency?.image ?? 'Auto'}</span> | 
             <span style="color: #818CF8; font-weight: 600;" title="Chat Slots">💬 ${a.concurrency?.chat ?? 'Auto'}</span>
+            ${a.live?.uses_24h ? `<div style="font-size: 11px; color: var(--text-dim); margin-top: 3px;" title="Jobs started on this account in the last 24h; new jobs go to the least used accounts">24h: ${a.live.uses_24h.video} video · ${a.live.uses_24h.image} img · ${a.live.uses_24h.chat} chat</div>` : ''}
           </td>
           <td>
             <div class="actions-cell">
