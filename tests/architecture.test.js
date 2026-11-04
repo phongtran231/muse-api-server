@@ -210,7 +210,107 @@ test('video reference deduplication preserves first-frame and face roles on the 
   assert.equal(result.referenceImageHints[1].weight, 1);
 });
 
-test('refs: reference images are sent upstream in order and numbered in the prompt', async () => {
+test('image and video generation preserve product controls and reference order', async () => {
+  for (const kind of ['image', 'video']) {
+    const { MuseClient } = isolated('src/core/client.js', { axios: {}, ws: {} });
+    const c = new MuseClient({ cookies: 'test' });
+    const images = ['face', 'product'].map(data_base64 => ({ data_base64, mime_type: 'image/jpeg' }));
+    let seen;
+    c.chat = async (prompt, options) => {
+      seen = { prompt, options };
+      return { text: '', presentations: [{ kind, data: { [kind === 'image' ? 'images' : 'videos']: [{ path: 'out' }] } }] };
+    };
+    await c[kind === 'image' ? 'generateImage' : 'generateVideo']('Woman holding the product', {
+      download: false,
+      ref_images: images,
+      reference_image_hints: [
+        { type: 'face', image_index: 1 },
+        { type: 'product', weight: 0, lock: true, image_index: 2 }
+      ]
+    });
+    assert.deepEqual([...seen.options.ref_images], images);
+    assert.match(seen.prompt, /\[Reference Image 1\] is a face reference/);
+    assert.match(seen.prompt, /\[Reference Image 2\] is a product reference/);
+    assert.match(seen.prompt, /shape, proportions, colors, materials, branding/);
+    assert.match(seen.prompt, /do not redesign or substitute it/);
+    assert.match(seen.prompt, /Reference weight: 0/);
+  }
+});
+
+test('deduplicated references retain product roles and weights', () => {
+  const d = new (dispatcher())();
+  const images = ['same', 'same', 'product'].map(data_base64 => ({ data_base64 }));
+  const result = d._dedupeReferences({
+    prompt: 'Use [Reference Image 3]', params: { reference_image_hints: [
+      { type: 'image', role: 'first_frame' },
+      { type: 'product', lock: true, weight: 0 },
+      { type: 'product', lock: false, weight: 0.5 }
+    ] }
+  }, { images, video: null });
+  assert.equal(result.references.images.length, 2);
+  assert.equal(result.prompt, 'Use [Reference Image 2]');
+  assert.equal(result.referenceImageHints[1].image_index, 1);
+  assert.equal(result.referenceImageHints[1].type, 'product');
+  assert.equal(result.referenceImageHints[1].weight, 0);
+  assert.equal(result.referenceImageHints[2].image_index, 2);
+});
+
+let hasZod = true;
+try { require.resolve('zod'); } catch { hasZod = false; }
+
+for (const kind of ['image', 'video']) {
+  test(`${kind} generation validates reference_images and rejects removed aliases`, {
+    skip: hasZod ? false : 'zod is not installed in this checkout'
+  }, async () => {
+    const helpers = isolated('src/routes/helpers.js');
+    let handler;
+    let submitted;
+    const router = { route() { return this; }, post(...args) { handler = args.at(-1); return this; }, all() { return this; } };
+    const route = isolated(`src/routes/${kind}s.js`, {
+      express: { Router: () => router },
+      '../services/storage': {},
+      '../serializers': { serializeJob: x => x },
+      '../middleware/auth': { requireScope: () => () => {} },
+      '../middleware/validate': { validate: () => () => {} },
+      '../middleware/errorHandler': { methodNotAllowed: () => {} },
+      './helpers': helpers,
+      './generation': { submitGeneration: async (_req, _res, spec) => { submitted = spec; } }
+    });
+    const schema = route[`${kind}RequestSchema`];
+    const references = [
+      { type: 'face', image: 'https://cdn.example.com/face.jpg', lock: true },
+      { type: 'product', image: 'https://cdn.example.com/product.jpg', weight: 0, lock: false }
+    ];
+    const body = schema.parse({ prompt: 'Fashion ad', reference_images: references });
+    await handler({ valid: { body } }, {});
+    assert.deepEqual([...submitted.references.images], references.map(item => item.image));
+    assert.equal(submitted.references.imageParams[1], 'reference_images[1].image');
+    assert.equal(submitted.params.reference_image_hints[1].type, 'product');
+    assert.equal(submitted.params.reference_image_hints[1].weight, 0);
+    assert.equal(submitted.params.reference_image_hints[1].lock, false);
+    assert.equal(schema.parse({ prompt: 'x', reference_images: [{ image: 'file_image' }] }).reference_images[0].type, 'image');
+    for (const invalid of [
+      { refs: ['https://cdn.example.com/old.jpg'] },
+      { reference_image: 'https://cdn.example.com/old.jpg' },
+      { reference_images: [] },
+      { reference_images: ['https://cdn.example.com/string.jpg'] },
+      { reference_images: [{ image: 'file_image', type: 'unknown' }] },
+      { reference_images: [{ image: 'file_image', weight: 1.1 }] },
+      { reference_images: Array.from({ length: 11 }, () => ({ image: 'file_image' })) }
+    ]) assert.equal(schema.safeParse({ prompt: 'x', ...invalid }).success, false);
+    if (kind === 'video') {
+      assert.equal(schema.safeParse({ prompt: 'x', mode: 'image_to_video' }).success, false);
+      assert.equal(schema.safeParse({ prompt: 'x', reference_images: references, reference_video: 'file_video' }).success, false);
+      assert.equal(schema.safeParse({ prompt: 'x', first_frame_image: 'file_image', reference_images: Array.from({ length: 10 }, () => ({ image: 'file_image' })) }).success, false);
+      const withFrame = schema.parse({ prompt: 'x', first_frame_image: 'file_frame', reference_images: references });
+      await handler({ valid: { body: withFrame } }, {});
+      assert.equal(submitted.references.images[0], 'file_frame');
+      assert.equal(submitted.params.reference_image_hints[2].type, 'product');
+    }
+  });
+}
+
+test('reference images are sent upstream in order and numbered in the prompt', async () => {
   const [a, b, c3] = ['aaa', 'bbb', 'ccc'].map((data_base64) => ({ data_base64, mime_type: 'image/png' }));
   for (const kind of ['image', 'video']) {
     const c = client();

@@ -158,7 +158,7 @@ async function main() {
   });
 
   await check('Video with two references -> 400 validation_failed', async () => {
-    expectError(await call('POST', '/v1/videos/generations', { key: clientKey, body: { prompt: 'x', reference_image: 'file_a', reference_video: 'file_b' } }), 400, 'validation_failed');
+    expectError(await call('POST', '/v1/videos/generations', { key: clientKey, body: { prompt: 'x', reference_images: [{ image: 'file_a' }], reference_video: 'file_b' } }), 400, 'validation_failed');
   });
 
   await check('Invalid Idempotency-Key -> 400 idempotency_key_invalid', async () => {

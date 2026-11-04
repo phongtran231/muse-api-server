@@ -258,6 +258,12 @@ For image-to-video, pass public image URLs directly:
       "image": "https://cdn.example.com/original-face.jpg",
       "weight": 1.0,
       "lock": true
+    },
+    {
+      "type": "product",
+      "image": "https://cdn.example.com/navy-sailor-dress.jpg",
+      "weight": 1.0,
+      "lock": true
     }
   ],
   "aspect_ratio": "9:16",
@@ -271,15 +277,38 @@ For image-to-video, pass public image URLs directly:
 it is inferred from the references. Image-to-video requires an image, and
 video-to-video requires `reference_video`. Images and video references cannot be
 combined; text-to-video accepts no reference media. Images may also use uploaded
-file IDs or data URIs, as with the existing `reference_image` and `refs` fields.
+file IDs or data URIs in `reference_images[].image` or `first_frame_image`.
 Remote URLs must be enabled on the server and reachable without authentication.
 
-At most 10 image entries are accepted across `first_frame_image`, `reference_images`,
-`reference_image`, and `refs`. The attachment order follows that same field order.
-Identical images are sent upstream once while retaining their first-frame/face
-instructions. `type` accepts `image` (default) or `face`; `weight` is between 0 and 1.
+Both image and video generation use `reference_images`, an ordered array of objects.
+At most 10 image entries are accepted, counting the optional video `first_frame_image`.
+The first-frame image is attached first, followed by `reference_images` in array order.
+Use `[Reference Image n]` in the prompt to identify the n-th attached image.
+Identical images are sent upstream once while retaining all first-frame/face/product
+instructions. `weight` is between 0 and 1; `lock` is an optional boolean.
 
-The current upstream uses a chat-based generation interface. First-frame, face lock,
+| Type | Purpose |
+| --- | --- |
+| `image` (default) | General visual reference for people, scenes, and objects. |
+| `face` | Preserve the person's face identity; `lock: true` asks to keep facial features unchanged. |
+| `product` | Preserve product shape, proportions, colors, materials, branding, and distinctive details; `lock: true` asks to prevent redesign or substitution. |
+
+**Migration:** generation endpoints no longer accept `refs` or `reference_image`.
+Replace `"refs": ["https://cdn.example.com/item.jpg"]` or
+`"reference_image": "https://cdn.example.com/item.jpg"` with:
+
+```json
+{
+  "reference_images": [
+    { "type": "product", "image": "https://cdn.example.com/item.jpg", "lock": true }
+  ]
+}
+```
+
+For a general reference, omit `type` or use `"type": "image"`. Requests using the
+removed fields return a validation error rather than silently ignoring the images.
+
+The current upstream uses a chat-based generation interface. First-frame, face/product lock,
 weight, style, and negative prompt are translated into prompt instructions; they
 are best-effort requests rather than native face-lock or numeric conditioning
 controls. `model` is retained as a client label and does not select an upstream model.

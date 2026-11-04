@@ -371,6 +371,7 @@ class Dispatcher extends EventEmitter {
         })
         : ctx.lease.client.generateImage(prompt, {
           ref_images: references.images,
+          reference_image_hints: referenceImageHints,
           aspect_ratio: job.params?.aspect_ratio || undefined,
           timeout,
           signal: ctx.controller.signal,
@@ -453,8 +454,8 @@ class Dispatcher extends EventEmitter {
         throw new ApiError(ErrorCodes.REFERENCE_INVALID, { message: `The reference file '${fileId}' is no longer available.`, param });
       }
     };
-    // Jobs created before `refs` only carry image_file_id (handled by imageIds above).
-    for (let i = 0; i < imageIds.length; i += 1) refs.images.push(await load(imageIds[i], `refs[${i}]`));
+    // Older jobs only carry image_file_id (handled by imageIds above).
+    for (let i = 0; i < imageIds.length; i += 1) refs.images.push(await load(imageIds[i], `reference_images[${i}].image`));
     if (job.reference?.video_file_id) refs.video = await load(job.reference.video_file_id, 'reference_video');
     return refs;
   }

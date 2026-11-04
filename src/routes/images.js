@@ -15,7 +15,7 @@ const storage = require('../services/storage');
 const { requireScope } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { methodNotAllowed } = require('../middleware/errorHandler');
-const { z, metadataSchema, referenceSchema, refsSchema, MAX_REFS } = require('./helpers');
+const { z, metadataSchema, referenceImagesSchema, normalizeReferenceImages } = require('./helpers');
 const { submitGeneration } = require('./generation');
 
 const router = express.Router();
@@ -27,27 +27,29 @@ const imageRequestSchema = z.object({
   model: z.string().max(64).optional(),
   n: z.literal(1).optional().describe('Only one image per request is supported.'),
   aspect_ratio: z.enum(IMAGE_ASPECT_RATIOS).optional(),
-  reference_image: referenceSchema.optional(),
-  refs: refsSchema.optional(),
+  reference_images: referenceImagesSchema.optional(),
   response_format: z.enum(['url', 'b64_json']).default('url'),
   async: z.boolean().default(false),
   webhook_url: z.string().max(2048).optional(),
   metadata: metadataSchema.optional()
-}).strict()
-  .refine((b) => (b.reference_image ? 1 : 0) + (b.refs?.length || 0) <= MAX_REFS, {
-    message: `At most ${MAX_REFS} reference images in total (reference_image + refs)`,
-    path: ['refs']
-  });
+}).strict();
 
 router
   .route('/generations')
   .post(requireScope('images'), validate(imageRequestSchema), async (req, res) => {
     const body = req.valid.body;
+    const referenceImages = normalizeReferenceImages(body.reference_images);
     await submitGeneration(req, res, {
       type: 'image',
       sync: !body.async,
-      params: { aspect_ratio: body.aspect_ratio || null, response_format: body.response_format },
-      references: { images: [body.reference_image, ...(body.refs || [])].filter(Boolean) },
+      params: {
+        aspect_ratio: body.aspect_ratio || null, response_format: body.response_format,
+        reference_image_hints: referenceImages.map((item) => item.hint)
+      },
+      references: {
+        images: referenceImages.map((item) => item.value),
+        imageParams: referenceImages.map((item) => item.param)
+      },
       onSucceeded: async (job, response) => {
         const item = {
           file_id: job.output.file_id,
@@ -75,3 +77,4 @@ router
 
 module.exports = router;
 module.exports.IMAGE_ASPECT_RATIOS = IMAGE_ASPECT_RATIOS;
+module.exports.imageRequestSchema = imageRequestSchema;

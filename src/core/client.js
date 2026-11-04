@@ -165,7 +165,7 @@ function parseGatewayInit(rawInput) {
 }
 
 /**
- * Ordered reference images from generation/chat options: `ref_images` (refs)
+ * Ordered reference images from generation/chat options: `ref_images`
  * plus the legacy single `ref_image`, which goes first.
  */
 function collectRefImages(options = {}) {
@@ -188,6 +188,26 @@ function refImagesNote(count) {
   }
   const order = Array.from({ length: count }, (_, i) => `image #${i + 1} is [Reference Image ${i + 1}]`).join(', ');
   return `${count} reference images are attached in this order: ${order}. Whenever the request mentions [Reference Image n], it means the n-th attached image.`;
+}
+
+/** Reference roles are prompt instructions for the chat-based upstream. */
+function referenceInstructions(hints) {
+  if (!Array.isArray(hints)) return '';
+  return hints.map((hint, index) => {
+    if (!hint || typeof hint !== 'object') return '';
+    const tag = `[Reference Image ${hint.image_index || index + 1}]`;
+    const weight = Number.isFinite(hint.weight) ? ` Reference weight: ${hint.weight}.` : '';
+    if (hint.role === 'first_frame') return `${tag} is the required opening frame; begin the video from this image and preserve its composition and subject identity.`;
+    if (hint.type === 'face') {
+      const lock = hint.lock === true ? 'Lock the face identity to this reference; do not change facial features.' : 'Use this as the face identity reference and keep the same person throughout.';
+      return `${tag} is a face reference. ${lock}${weight}`;
+    }
+    if (hint.type === 'product') {
+      const lock = hint.lock === true ? ' Lock the product appearance to this reference; do not redesign or substitute it.' : '';
+      return `${tag} is a product reference. Preserve the product shape, proportions, colors, materials, branding and distinctive details.${lock}${weight}`;
+    }
+    return `${tag} is a visual reference.${hint.lock === true ? ' Preserve its subject identity and appearance throughout.' : ''}${weight}`;
+  }).filter(Boolean).join(' ');
 }
 
 /** Error for a turn that ended without media; carries the model's own explanation when it gave one. */
@@ -1719,6 +1739,8 @@ class MuseClient extends EventEmitter {
     } else if (refVideo) {
       formattedPrompt = `Using the attached reference video, generate a new image that follows this request: ${prompt}${ratioHint}`;
     }
+    const instructions = referenceInstructions(options.reference_image_hints);
+    if (instructions) formattedPrompt += ` Reference instructions: ${instructions}`;
 
     const chatResult = await this.chat(formattedPrompt, {
       sessionId: null,
@@ -1785,7 +1807,6 @@ class MuseClient extends EventEmitter {
     const aspectRatio = options.aspect_ratio || options.aspectRatio || '16:9';
     const duration = parseInt(options.duration, 10) || 5;
     const mode = options.mode || (refImages.length ? 'image_to_video' : refVideo ? 'video_to_video' : 'text_to_video');
-    const referenceHints = Array.isArray(options.reference_image_hints) ? options.reference_image_hints : [];
 
     let formattedPrompt = `Create a high quality motion video based on this prompt: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
     if (refImages.length) {
@@ -1793,18 +1814,8 @@ class MuseClient extends EventEmitter {
     } else if (refVideo) {
       formattedPrompt = `Based on the attached reference video (Video-to-Video), regenerate a motion video with dynamic effects: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s.`;
     }
-    const imageInstructions = referenceHints.map((hint, index) => {
-      if (!hint || typeof hint !== 'object') return '';
-      const tag = `[Reference Image ${hint.image_index || index + 1}]`;
-      if (hint.role === 'first_frame') return `${tag} is the required opening frame; begin the video from this image and preserve its composition and subject identity.`;
-      if (hint.type === 'face') {
-        const lock = hint.lock === true ? 'Lock the face identity to this reference; do not change facial features.' : 'Use this as the face identity reference and keep the same person throughout.';
-        const weight = Number.isFinite(hint.weight) ? ` Reference weight: ${hint.weight}.` : '';
-        return `${tag} is a face reference. ${lock}${weight}`;
-      }
-      return `${tag} is a visual reference.${hint.lock === true ? ' Preserve its subject identity and appearance throughout.' : ''}${Number.isFinite(hint.weight) ? ` Reference weight: ${hint.weight}.` : ''}`;
-    }).filter(Boolean);
-    if (imageInstructions.length) formattedPrompt += ` Reference instructions: ${imageInstructions.join(' ')}`;
+    const instructions = referenceInstructions(options.reference_image_hints);
+    if (instructions) formattedPrompt += ` Reference instructions: ${instructions}`;
     if (options.style) formattedPrompt += ` Visual style: ${options.style}.`;
     if (options.negative_prompt) formattedPrompt += ` Avoid these elements: ${options.negative_prompt}.`;
     formattedPrompt += ` Generation mode: ${mode}.`;

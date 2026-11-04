@@ -21,14 +21,26 @@ const metadataSchema = z
 /** A reference media value: file ID, http(s) URL, or base64 data URI. */
 const referenceSchema = z.string().min(1).max(60 * 1024 * 1024);
 
-/** Max reference images per generation request (`refs`). */
+/** Max reference images per generation request. */
 const MAX_REFS = 10;
 
 /**
  * Ordered list of reference images. Position n (1-based) is "[Reference Image n]"
  * in the prompt sent upstream.
  */
-const refsSchema = z.array(referenceSchema).min(1).max(MAX_REFS);
+const referenceImageSchema = z.object({
+  type: z.enum(['image', 'face', 'product']).default('image'),
+  image: referenceSchema,
+  weight: z.number().min(0).max(1).optional(),
+  lock: z.boolean().optional()
+}).strict();
+const referenceImagesSchema = z.array(referenceImageSchema).min(1).max(MAX_REFS);
+
+function normalizeReferenceImages(items = []) {
+  return items.map(({ image, ...hint }, index) => ({
+    value: image, param: `reference_images[${index}].image`, hint
+  }));
+}
 
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -92,7 +104,8 @@ module.exports = {
   z,
   metadataSchema,
   referenceSchema,
-  refsSchema,
+  referenceImagesSchema,
+  normalizeReferenceImages,
   MAX_REFS,
   listQuerySchema,
   idParamSchema,

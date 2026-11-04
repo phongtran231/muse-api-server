@@ -44,8 +44,8 @@ the \`admin\` scope.
 * Every response includes an \`X-Request-Id\` header; include it when contacting support.
 
 ## Reference media
-Wherever a reference is accepted (\`reference_image\`, \`reference_video\`, each item of \`refs\`,
-\`image_url.url\`, \`video_url.url\`) you may pass:
+Wherever a reference is accepted (\`first_frame_image\`, \`reference_images[].image\`,
+\`reference_video\`, \`image_url.url\`, \`video_url.url\`) you may pass:
 1. a file ID from \`POST /v1/files\` (recommended for large media),
 2. a public \`https://\` URL, or
 3. a base64 data URI (\`data:image/png;base64,...\`).
@@ -53,21 +53,25 @@ Wherever a reference is accepted (\`reference_image\`, \`reference_video\`, each
 Limits: images up to ${Math.round(config.storage.maxImageBytes / 1048576)} MB (JPEG, PNG, WEBP, GIF),
 videos up to ${Math.round(config.storage.maxVideoBytes / 1048576)} MB (MP4, MOV, WEBM).
 
-### Multiple reference images (\`refs\`)
-Image and video generation accept \`refs\`: an ordered array of up to 10 reference images
-(\`reference_image\`, if also sent, counts as the first one). The n-th image is
-\`[Reference Image n]\`, so the prompt can say e.g. "the woman in [Reference Image 1] holds the
-bottle from [Reference Image 2]". \`refs\` cannot be combined with \`reference_video\`.
+### Reference images (\`reference_images\`)
+Image and video generation accept \`reference_images\`: an ordered array of objects
+with \`image\`, \`type\` (\`image\`, \`face\`, or \`product\`; default \`image\`),
+optional \`weight\` (0–1), and optional \`lock\`.
+Use \`face\` to preserve a person's identity and \`product\` to preserve a product's
+shape, proportions, colors, materials, branding, and distinctive details.
+Public image URLs work directly. The n-th attached image is \`[Reference Image n]\`,
+so a prompt can refer to a person in image 1 holding the product in image 2.
+Videos may also specify \`first_frame_image\`, attached before \`reference_images\`.
+At most 10 image entries total are accepted. Identical images are attached once,
+retaining all roles. Image references cannot be combined with \`reference_video\`.
+
+Migration: \`refs\` and \`reference_image\` are no longer accepted by generation
+endpoints; use \`reference_images: [{"type":"image","image":"https://..."}]\`.
 
 ### Video controls
-Videos also accept \`first_frame_image\` and \`reference_images\` objects with an
-\`image\` reference, \`type\` (\`image\` or \`face\`), optional \`weight\` (0–1),
-and optional \`lock\`. Public image URLs work directly. The image order is
-\`first_frame_image\`, \`reference_images\`, \`reference_image\`, then \`refs\`;
-at most 10 entries total. Duplicate images are attached once, retaining all roles.
 \`mode\` is inferred when omitted. \`image_to_video\` requires an image;
 \`video_to_video\` requires \`reference_video\`; \`text_to_video\` accepts no references.
-The chat-based upstream receives first-frame, face lock, weight, style and
+The chat-based upstream receives first-frame, face/product lock, weight, style and
 \`negative_prompt\` as best-effort prompt instructions, not native conditioning
 controls. \`model\` is a stored client label and does not select an upstream model.
 
@@ -472,6 +476,15 @@ function buildOpenApiSpec() {
           }
         },
 
+        ReferenceImage: {
+          type: 'object', required: ['image'], additionalProperties: false,
+          properties: {
+            type: { type: 'string', enum: ['image', 'face', 'product'], default: 'image' },
+            image: ref('Reference'),
+            weight: { type: 'number', minimum: 0, maximum: 1 },
+            lock: { type: 'boolean' }
+          }
+        },
         ImageGenerationRequest: {
           type: 'object',
           required: ['prompt'],
@@ -481,8 +494,7 @@ function buildOpenApiSpec() {
             model: { type: 'string' },
             n: { type: 'integer', const: 1 },
             aspect_ratio: { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'] },
-            reference_image: ref('Reference'),
-            refs: { type: 'array', items: ref('Reference'), minItems: 1, maxItems: 10, description: 'Ordered reference images; item n is [Reference Image n] in the prompt.' },
+            reference_images: { type: 'array', items: ref('ReferenceImage'), minItems: 1, maxItems: 10, description: 'Ordered reference images; item n is [Reference Image n] in the prompt.' },
             response_format: { type: 'string', enum: ['url', 'b64_json'], default: 'url' },
             async: { type: 'boolean', default: false },
             webhook_url: { type: 'string', format: 'uri' },
@@ -513,21 +525,8 @@ function buildOpenApiSpec() {
             style: { type: 'string', maxLength: 500 },
             negative_prompt: { type: 'string', maxLength: 1000 },
             first_frame_image: ref('Reference'),
-            reference_images: {
-              type: 'array', minItems: 1, maxItems: 10,
-              items: {
-                type: 'object', required: ['image'], additionalProperties: false,
-                properties: {
-                  type: { type: 'string', enum: ['image', 'face'], default: 'image' },
-                  image: ref('Reference'),
-                  weight: { type: 'number', minimum: 0, maximum: 1 },
-                  lock: { type: 'boolean' }
-                }
-              }
-            },
-            reference_image: ref('Reference'),
+            reference_images: { type: 'array', items: ref('ReferenceImage'), minItems: 1, maxItems: 10, description: 'Ordered reference images after first_frame_image; at most 10 image entries total.' },
             reference_video: ref('Reference'),
-            refs: { type: 'array', items: ref('Reference'), minItems: 1, maxItems: 10, description: 'Ordered reference images; item n is [Reference Image n] in the prompt.' },
             async: { type: 'boolean', default: true },
             webhook_url: { type: 'string', format: 'uri' },
             metadata: ref('Metadata')
