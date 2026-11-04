@@ -244,6 +244,46 @@ curl http://localhost:8080/v1/jobs/job_9b3e1f0a2c \
   -H "Authorization: Bearer mk_live_YOUR_API_KEY"
 ```
 
+For image-to-video, pass public image URLs directly:
+
+```json
+{
+  "model": "muse-video-v1",
+  "mode": "image_to_video",
+  "prompt": "Same woman as in the reference, wearing a navy sailor dress. Vertical realistic UGC fashion ad, seven shots with hard cuts. No talking, no on-screen text.",
+  "first_frame_image": "https://cdn.example.com/original-face.jpg",
+  "reference_images": [
+    {
+      "type": "face",
+      "image": "https://cdn.example.com/original-face.jpg",
+      "weight": 1.0,
+      "lock": true
+    }
+  ],
+  "aspect_ratio": "9:16",
+  "duration": 8,
+  "style": "realistic",
+  "negative_prompt": "different face, distorted face, cartoon, text, watermark"
+}
+```
+
+`mode` accepts `text_to_video`, `image_to_video`, or `video_to_video`; when omitted,
+it is inferred from the references. Image-to-video requires an image, and
+video-to-video requires `reference_video`. Images and video references cannot be
+combined; text-to-video accepts no reference media. Images may also use uploaded
+file IDs or data URIs, as with the existing `reference_image` and `refs` fields.
+Remote URLs must be enabled on the server and reachable without authentication.
+
+At most 10 image entries are accepted across `first_frame_image`, `reference_images`,
+`reference_image`, and `refs`. The attachment order follows that same field order.
+Identical images are sent upstream once while retaining their first-frame/face
+instructions. `type` accepts `image` (default) or `face`; `weight` is between 0 and 1.
+
+The current upstream uses a chat-based generation interface. First-frame, face lock,
+weight, style, and negative prompt are translated into prompt instructions; they
+are best-effort requests rather than native face-lock or numeric conditioning
+controls. `model` is retained as a client label and does not select an upstream model.
+
 ---
 
 ## 🛠️ Configuration Guide

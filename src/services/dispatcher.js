@@ -336,7 +336,7 @@ class Dispatcher extends EventEmitter {
 
     let outputFile = null;
     try {
-      const { references, prompt } = this._dedupeReferences(job, await this._loadReferences(job));
+      const { references, prompt, referenceImageHints } = this._dedupeReferences(job, await this._loadReferences(job));
       ctx.controller.signal.throwIfAborted();
 
       ctx.lease = await pool.acquire(job.type, { exclude: job.excluded_accounts || [], waitMs: ACQUIRE_WAIT_MS });
@@ -360,6 +360,10 @@ class Dispatcher extends EventEmitter {
           ref_video: references.video,
           aspect_ratio: job.params?.aspect_ratio || undefined,
           duration: job.params?.duration || undefined,
+          mode: job.params?.mode || undefined,
+          style: job.params?.style || undefined,
+          negative_prompt: job.params?.negative_prompt || undefined,
+          reference_image_hints: referenceImageHints,
           timeout,
           signal: ctx.controller.signal,
           maxBytes: config.storage.maxVideoBytes,
@@ -471,13 +475,17 @@ class Dispatcher extends EventEmitter {
       }
       newIndex.push(indexByData.get(img.data_base64));
     }
-    if (images.length === references.images.length) return { references, prompt: job.prompt };
+    // Keep all roles when a first-frame image and a face reference are identical.
+    const referenceImageHints = (job.params?.reference_image_hints || []).map((hint, index) => ({
+      ...hint, image_index: newIndex[index]
+    }));
+    if (images.length === references.images.length) return { references, prompt: job.prompt, referenceImageHints };
     const prompt = job.prompt.replace(/\[Reference Image (\d+)\]/gi, (tag, n) => {
       const mapped = newIndex[Number(n) - 1];
       return mapped ? `[Reference Image ${mapped}]` : tag;
     });
     log.info({ job: job._id, sent: images.length, attached: references.images.length }, 'Duplicate reference images removed before sending');
-    return { references: { ...references, images }, prompt };
+    return { references: { ...references, images }, prompt, referenceImageHints };
   }
 
   _onProgress(ctx, text) {

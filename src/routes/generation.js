@@ -66,9 +66,8 @@ async function submitGeneration(req, res, { type, sync, params, references, onSu
     const reference = { image_file_id: null, image_file_ids: [], video_file_id: null };
     // Order matters: element n becomes [Reference Image n] in the upstream prompt.
     const images = references.images || [];
-    const offset = body.reference_image ? 1 : 0;
     for (let i = 0; i < images.length; i += 1) {
-      const param = offset && i === 0 ? 'reference_image' : `refs[${i - offset}]`;
+      const param = references.imageParams?.[i] || (body.reference_image && i === 0 ? 'reference_image' : `refs[${i - (body.reference_image ? 1 : 0)}]`);
       const doc = await media.resolveReference(images[i], { expectedKind: 'image', apiKeyId: apiKey._id, param });
       reference.image_file_ids.push(doc._id);
     }

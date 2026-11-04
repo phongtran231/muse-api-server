@@ -1784,6 +1784,8 @@ class MuseClient extends EventEmitter {
     const refVideo = options.ref_video || options.refVideo || null;
     const aspectRatio = options.aspect_ratio || options.aspectRatio || '16:9';
     const duration = parseInt(options.duration, 10) || 5;
+    const mode = options.mode || (refImages.length ? 'image_to_video' : refVideo ? 'video_to_video' : 'text_to_video');
+    const referenceHints = Array.isArray(options.reference_image_hints) ? options.reference_image_hints : [];
 
     let formattedPrompt = `Create a high quality motion video based on this prompt: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
     if (refImages.length) {
@@ -1791,6 +1793,21 @@ class MuseClient extends EventEmitter {
     } else if (refVideo) {
       formattedPrompt = `Based on the attached reference video (Video-to-Video), regenerate a motion video with dynamic effects: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s.`;
     }
+    const imageInstructions = referenceHints.map((hint, index) => {
+      if (!hint || typeof hint !== 'object') return '';
+      const tag = `[Reference Image ${hint.image_index || index + 1}]`;
+      if (hint.role === 'first_frame') return `${tag} is the required opening frame; begin the video from this image and preserve its composition and subject identity.`;
+      if (hint.type === 'face') {
+        const lock = hint.lock === true ? 'Lock the face identity to this reference; do not change facial features.' : 'Use this as the face identity reference and keep the same person throughout.';
+        const weight = Number.isFinite(hint.weight) ? ` Reference weight: ${hint.weight}.` : '';
+        return `${tag} is a face reference. ${lock}${weight}`;
+      }
+      return `${tag} is a visual reference.${hint.lock === true ? ' Preserve its subject identity and appearance throughout.' : ''}${Number.isFinite(hint.weight) ? ` Reference weight: ${hint.weight}.` : ''}`;
+    }).filter(Boolean);
+    if (imageInstructions.length) formattedPrompt += ` Reference instructions: ${imageInstructions.join(' ')}`;
+    if (options.style) formattedPrompt += ` Visual style: ${options.style}.`;
+    if (options.negative_prompt) formattedPrompt += ` Avoid these elements: ${options.negative_prompt}.`;
+    formattedPrompt += ` Generation mode: ${mode}.`;
 
     const chatResult = await this.chat(formattedPrompt, {
       sessionId: null,

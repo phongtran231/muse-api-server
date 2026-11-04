@@ -59,6 +59,18 @@ Image and video generation accept \`refs\`: an ordered array of up to 10 referen
 \`[Reference Image n]\`, so the prompt can say e.g. "the woman in [Reference Image 1] holds the
 bottle from [Reference Image 2]". \`refs\` cannot be combined with \`reference_video\`.
 
+### Video controls
+Videos also accept \`first_frame_image\` and \`reference_images\` objects with an
+\`image\` reference, \`type\` (\`image\` or \`face\`), optional \`weight\` (0–1),
+and optional \`lock\`. Public image URLs work directly. The image order is
+\`first_frame_image\`, \`reference_images\`, \`reference_image\`, then \`refs\`;
+at most 10 entries total. Duplicate images are attached once, retaining all roles.
+\`mode\` is inferred when omitted. \`image_to_video\` requires an image;
+\`video_to_video\` requires \`reference_video\`; \`text_to_video\` accepts no references.
+The chat-based upstream receives first-frame, face lock, weight, style and
+\`negative_prompt\` as best-effort prompt instructions, not native conditioning
+controls. \`model\` is a stored client label and does not select an upstream model.
+
 ## Synchronous vs asynchronous generation
 * **Images** are synchronous by default. If generation exceeds the server wait
   window the API answers \`202 Accepted\` with a job object instead; poll the
@@ -489,8 +501,24 @@ function buildOpenApiSpec() {
           properties: {
             prompt: { type: 'string', minLength: 1, maxLength: 4000 },
             model: { type: 'string' },
+            mode: { type: 'string', enum: ['text_to_video', 'image_to_video', 'video_to_video'] },
             aspect_ratio: { type: 'string', enum: ['16:9', '9:16', '1:1'], default: '16:9' },
             duration: { type: 'integer', minimum: 3, maximum: 10, default: 5, description: 'Seconds.' },
+            style: { type: 'string', maxLength: 500 },
+            negative_prompt: { type: 'string', maxLength: 1000 },
+            first_frame_image: ref('Reference'),
+            reference_images: {
+              type: 'array', minItems: 1, maxItems: 10,
+              items: {
+                type: 'object', required: ['image'], additionalProperties: false,
+                properties: {
+                  type: { type: 'string', enum: ['image', 'face'], default: 'image' },
+                  image: ref('Reference'),
+                  weight: { type: 'number', minimum: 0, maximum: 1 },
+                  lock: { type: 'boolean' }
+                }
+              }
+            },
             reference_image: ref('Reference'),
             reference_video: ref('Reference'),
             refs: { type: 'array', items: ref('Reference'), minItems: 1, maxItems: 10, description: 'Ordered reference images; item n is [Reference Image n] in the prompt.' },

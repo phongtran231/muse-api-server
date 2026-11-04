@@ -52,7 +52,13 @@ function serializeJob(doc) {
     prompt: doc.prompt,
     params: {
       aspect_ratio: doc.params?.aspect_ratio || null,
-      ...(doc.type === 'video' ? { duration: doc.params?.duration ?? null } : { response_format: doc.params?.response_format || 'url' })
+      ...(doc.type === 'video' ? {
+        model: doc.params?.model || null,
+        mode: doc.params?.mode || null,
+        duration: doc.params?.duration ?? null,
+        style: doc.params?.style || null,
+        negative_prompt: doc.params?.negative_prompt || null
+      } : { response_format: doc.params?.response_format || 'url' })
     },
     reference: {
       image_file_id: doc.reference?.image_file_id || null,

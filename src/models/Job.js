@@ -20,9 +20,14 @@ const JobSchema = new mongoose.Schema(
     status: { type: String, enum: JOB_STATUSES, default: 'queued' },
     prompt: { type: String, required: true, maxlength: 4000 },
     params: {
+      model: { type: String, default: null },
+      mode: { type: String, default: null },
       aspect_ratio: { type: String, default: null },
       duration: { type: Number, default: null },
-      response_format: { type: String, default: 'url' }
+      response_format: { type: String, default: 'url' },
+      style: { type: String, default: null },
+      negative_prompt: { type: String, default: null },
+      reference_image_hints: { type: [mongoose.Schema.Types.Mixed], default: [] }
     },
     reference: {
       image_file_id: { type: String, default: null },

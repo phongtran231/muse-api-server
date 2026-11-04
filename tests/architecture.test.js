@@ -157,6 +157,59 @@ test('image and video generation preserve references, options and session-owned 
   }
 });
 
+test('video generation turns image-to-video controls into upstream instructions', async () => {
+  // This test exercises prompt assembly only; it must never open a connection.
+  const { MuseClient } = isolated('src/core/client.js', { axios: {}, ws: {} });
+  const c = new MuseClient({ cookies: 'test' });
+  let sentPrompt = '';
+  c.chat = async (prompt) => {
+    sentPrompt = prompt;
+    return { text: '', sessionId: A, presentations: [{ kind: 'video', data: { videos: [{ path: 'out' }] } }] };
+  };
+  c.readFile = async () => Buffer.from('x');
+  c.deleteSession = async () => ({ ok: true });
+  await c.generateVideo('Same woman, keep face unchanged', {
+    ref_images: [{ data_base64: 'face', mime_type: 'image/png' }],
+    reference_image_hints: [
+      { type: 'image', role: 'first_frame', image_index: 1 },
+      { type: 'face', weight: 1, lock: true, image_index: 1 }
+    ],
+    mode: 'image_to_video',
+    style: 'realistic UGC fashion ad',
+    negative_prompt: 'different face, watermark',
+    aspect_ratio: '9:16',
+    duration: 8
+  });
+  assert.match(sentPrompt, /\[Reference Image 1\] is the required opening frame/);
+  assert.match(sentPrompt, /\[Reference Image 1\] is a face reference/);
+  assert.doesNotMatch(sentPrompt, /\[Reference Image 2\]/);
+  assert.match(sentPrompt, /face identity/);
+  assert.match(sentPrompt, /Reference weight: 1/);
+  assert.match(sentPrompt, /Visual style: realistic UGC fashion ad/);
+  assert.match(sentPrompt, /Avoid these elements: different face, watermark/);
+  assert.match(sentPrompt, /Generation mode: image_to_video/);
+  assert.match(sentPrompt, /9:16/);
+  assert.match(sentPrompt, /8s/);
+});
+
+test('video reference deduplication preserves first-frame and face roles on the same image', () => {
+  const Dispatcher = dispatcher();
+  const d = new Dispatcher();
+  const image = { data_base64: 'same-image', mime_type: 'image/png' };
+  const hints = [{ role: 'first_frame', type: 'image' }, { type: 'face', weight: 1, lock: true }];
+  const result = d._dedupeReferences({
+    _id: 'job', prompt: 'Keep [Reference Image 2] unchanged', params: { reference_image_hints: hints }
+  }, { images: [image, { ...image }], video: null });
+  assert.equal(result.references.images.length, 1);
+  assert.equal(result.prompt, 'Keep [Reference Image 1] unchanged');
+  assert.equal(result.referenceImageHints.length, 2);
+  assert.equal(result.referenceImageHints[0].image_index, 1);
+  assert.equal(result.referenceImageHints[0].role, 'first_frame');
+  assert.equal(result.referenceImageHints[1].image_index, 1);
+  assert.equal(result.referenceImageHints[1].lock, true);
+  assert.equal(result.referenceImageHints[1].weight, 1);
+});
+
 test('refs: reference images are sent upstream in order and numbered in the prompt', async () => {
   const [a, b, c3] = ['aaa', 'bbb', 'ccc'].map((data_base64) => ({ data_base64, mime_type: 'image/png' }));
   for (const kind of ['image', 'video']) {
