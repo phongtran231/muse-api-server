@@ -71,6 +71,12 @@ The chat-based upstream receives first-frame, face lock, weight, style and
 \`negative_prompt\` as best-effort prompt instructions, not native conditioning
 controls. \`model\` is a stored client label and does not select an upstream model.
 
+### Generations the model declines
+When the model answers a generation with text instead of media (declined content,
+a failed generation, or a question), the job fails with \`content_not_generated\`
+and \`error.message\` contains the model's reply. Such jobs are not retried on other
+accounts; rephrase the prompt or change the references.
+
 ## Synchronous vs asynchronous generation
 * **Images** are synchronous by default. If generation exceeds the server wait
   window the API answers \`202 Accepted\` with a job object instead; poll the

@@ -53,7 +53,7 @@ Whether you want to build autonomous AI agents, Telegram/Discord bots, automated
 
 ### 1. 🔌 Multi-Account Pooling with Extreme Concurrency (Up to 2,000 Threads)
 - **Zero Datacenter IP Blocking**: Meta strictly limits requests originating from cloud VPS/datacenter IPs. By feeding a **direct WebSocket link (`wss://...`)**, the backend connects straight to the assigned Meta VM, **100% bypassing datacenter IP restrictions**.
-- **Dynamic Load Balancing**: Connect multiple Meta accounts. The built-in client pool dynamically balances loads using least-loaded round-robin selection with configurable concurrency slots.
+- **Dynamic Load Balancing**: Connect multiple Meta accounts. Each job goes to the least-loaded account, then to the account used least in the last 24 hours (counted per chat / image / video), so work spreads over every account instead of the few whose VM is awake. An awake VM only wins between equally used accounts. The 24h counts survive restarts and are shown in the admin Accounts table.
 - **Configurable Concurrency**: Concurrency limits can scale up to **2,000 parallel threads** per account for large-scale enterprise clusters.
 
 ### 2. 🛡️ Self-Healing WSS Auto-Recovery Watchdog
@@ -283,6 +283,22 @@ The current upstream uses a chat-based generation interface. First-frame, face l
 weight, style, and negative prompt are translated into prompt instructions; they
 are best-effort requests rather than native face-lock or numeric conditioning
 controls. `model` is retained as a client label and does not select an upstream model.
+
+#### When a generation fails
+
+The upstream sometimes answers a video or image request with text instead of media:
+it declines the content, reports that the generation failed (for example when the same
+image is attached twice), or asks a follow-up question. The job then fails quickly with
+`content_not_generated`, and `error.message` carries the model's reply, e.g.
+`The model did not produce a video. Its reply: I couldn't generate that video as written…`.
+These jobs are not retried on other accounts and do not count against the account,
+because the same request would be declined again; rephrase the prompt or change the
+references instead. Failures of the account or connection (`upstream_timeout`,
+`upstream_error`) are still retried once on another account.
+
+In the admin dashboard, failed jobs show this reason under their status (Live Jobs,
+Overview and Studio); click it for the full details, including the previous attempt's
+error and the accounts that ran the job.
 
 ---
 
