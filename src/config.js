@@ -204,7 +204,13 @@ const config = Object.freeze({
     chatSlotWaitMs: int('CHAT_SLOT_WAIT_MS', 0, { min: 0, max: 300000 }),
     keepAliveIntervalMs: int('KEEPALIVE_INTERVAL_MIN', 15, { min: 1, max: 1440 }) * 60 * 1000,
     failureCooldownBaseMs: int('ACCOUNT_COOLDOWN_BASE_MS', 30000, { min: 1000, max: 3600000 }),
-    failureCooldownMaxMs: int('ACCOUNT_COOLDOWN_MAX_MS', 15 * 60 * 1000, { min: 1000, max: 24 * 3600000 })
+    failureCooldownMaxMs: int('ACCOUNT_COOLDOWN_MAX_MS', 15 * 60 * 1000, { min: 1000, max: 24 * 3600000 }),
+    // Warm-up of idle accounts on each image/video request (see pool._triggerWarmup).
+    warmupBatchSize: int('WARMUP_BATCH_SIZE', 10, { min: 0, max: 100 }),
+    warmupMaxInFlight: int('WARMUP_MAX_IN_FLIGHT', 10, { min: 0, max: 100 }),
+    warmupReadyDelayMs: int('WARMUP_READY_DELAY_MS', 60000, { min: 0, max: 600000 }),
+    warmupRetryMs: int('WARMUP_RETRY_MS', 5 * 60 * 1000, { min: 0, max: 3600000 }),
+    warmupStaggerMs: int('WARMUP_STAGGER_MS', 1500, { min: 0, max: 60000 })
   }),
 
   jobs: Object.freeze({

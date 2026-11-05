@@ -53,7 +53,7 @@ Whether you want to build autonomous AI agents, Telegram/Discord bots, automated
 
 ### 1. 🔌 Multi-Account Pooling with Extreme Concurrency (Up to 2,000 Threads)
 - **Zero Datacenter IP Blocking**: Meta strictly limits requests originating from cloud VPS/datacenter IPs. By feeding a **direct WebSocket link (`wss://...`)**, the backend connects straight to the assigned Meta VM, **100% bypassing datacenter IP restrictions**.
-- **Dynamic Load Balancing**: Connect multiple Meta accounts. Each job goes to the least-loaded account, then to the account used least in the last 24 hours (counted per chat / image / video), so work spreads over every account instead of the few whose VM is awake. An awake VM only wins between equally used accounts. The 24h counts survive restarts and are shown in the admin Accounts table.
+- **Dynamic Load Balancing**: Connect multiple Meta accounts. Each request goes to a *live* account first (connected, VM awake, warmed up), least loaded and least used in the last 24 hours. At the same time the pool warms up the least used idle accounts (renews their connection and wakes their VM), up to 10 per request and 10 at once; a warmed-up account only takes work one minute later, because a VM that was just woken often ignores the first request. Cold accounts are used only when no live account has a free slot. Tunable with `WARMUP_BATCH_SIZE`, `WARMUP_MAX_IN_FLIGHT`, `WARMUP_READY_DELAY_MS`, `WARMUP_RETRY_MS` and `WARMUP_STAGGER_MS`.
 - **Configurable Concurrency**: Concurrency limits can scale up to **2,000 parallel threads** per account for large-scale enterprise clusters.
 
 ### 2. 🛡️ Self-Healing WSS Auto-Recovery Watchdog

@@ -48,6 +48,9 @@ const VM_WAKE_CONNECT_ATTEMPTS = 4;
 // Accounts are balanced on how often they were used in this window, so every
 // account gets a share instead of the few whose VM happens to be awake.
 const RECENT_USE_WINDOW_MS = 24 * 60 * 60 * 1000;
+// A VM that was just woken or got a fresh token accepts the WebSocket before its
+// agent answers: requests sent right away often get no reply until the timeout.
+// Such a connection is held back for a minute before it takes work.
 const VM_WAKE_RETRY_DELAY_MS = 5000;
 
 /** host:port of a proxy URL for logs (never the credentials). */
@@ -111,6 +114,7 @@ class AccountPool extends EventEmitter {
       image: config.pool.defaultConcurrency.image,
       video: config.pool.defaultConcurrency.video
     };
+    this.warmingCount = 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -209,6 +213,64 @@ class AccountPool extends EventEmitter {
     return entry.status !== 'expired' && entry.cooldownUntil <= now;
   }
 
+  /** Connected, awake and past its warm-up delay: can take a request right now. */
+  _isLive(entry, now = Date.now()) {
+    return Boolean(entry.client?.ws && entry.client.ws.readyState === 1) && !entry.sleeping && !entry.warming && entry.readyAt <= now;
+  }
+
+  /** Being warmed up, or warmed up less than the ready delay ago: not picked yet. */
+  _isWarming(entry, now = Date.now()) {
+    return entry.warming || entry.readyAt > now;
+  }
+
+  /** Holds a freshly connected account back until its VM is ready, and drains waiters then. */
+  _holdUntilReady(entry, delayMs = config.pool.warmupReadyDelayMs) {
+    entry.readyAt = Math.max(entry.readyAt, Date.now() + delayMs);
+    if (entry.readyTimer) clearTimeout(entry.readyTimer);
+    entry.readyTimer = setTimeout(() => {
+      entry.readyTimer = null;
+      for (const capability of CAPABILITIES) this._drain(capability);
+    }, entry.readyAt - Date.now() + 50);
+    entry.readyTimer.unref?.();
+  }
+
+  /**
+   * Wakes up to `warmupBatchSize` of the least used accounts that are not live,
+   * so they are ready (after the warm-up delay) when later requests arrive. At
+   * most `warmupMaxInFlight` warm-ups run at once, started a little apart, to
+   * stay clear of upstream rate limits.
+   */
+  _triggerWarmup(capability) {
+    const { warmupBatchSize, warmupMaxInFlight, warmupRetryMs, warmupStaggerMs } = config.pool;
+    const room = Math.min(warmupBatchSize, warmupMaxInFlight - this.warmingCount);
+    if (room <= 0 || this.shuttingDown) return;
+    const now = Date.now();
+    const candidates = [...this.entries.values()]
+      .filter((e) => this._supports(e, capability) && this._isHealthy(e, now) && !this._isLive(e, now) && !this._isWarming(e, now)
+        && !e.connecting && !e.isRenewing && now - e.lastWarmupAt >= warmupRetryMs)
+      .sort((a, b) => this._recentUseCount(a, capability, now) - this._recentUseCount(b, capability, now) || a.lastUsedAt - b.lastUsedAt)
+      .slice(0, room);
+    candidates.forEach((entry, i) => {
+      entry.warming = true;
+      entry.lastWarmupAt = now;
+      this.warmingCount += 1;
+      const t = setTimeout(() => {
+        this._ensureClient(entry, { wake: true })
+          .then(() => {
+            this._holdUntilReady(entry);
+            log.info({ account: entry.id, name: entry.doc.name, readyAt: new Date(entry.readyAt).toISOString() }, 'Account warmed up; available after the warm-up delay');
+          })
+          .catch((err) => log.warn({ account: entry.id, name: entry.doc.name, err: sanitize(err.message) }, 'Account warm-up failed'))
+          .finally(() => {
+            entry.warming = false;
+            this.warmingCount -= 1;
+          });
+      }, i * warmupStaggerMs);
+      t.unref?.();
+    });
+    if (candidates.length) log.info({ capability, accounts: candidates.map((e) => e.doc.name), inFlight: this.warmingCount }, 'Warming up least used accounts');
+  }
+
   _pick(capability, { preferredAccountId = null, exclude = new Set() } = {}) {
     const now = Date.now();
     let best = null;
@@ -216,16 +278,19 @@ class AccountPool extends EventEmitter {
     for (const entry of this.entries.values()) {
       if (preferredAccountId && entry.id !== preferredAccountId) continue;
       if (exclude.has(entry.id) || !this._supports(entry, capability) || !this._isHealthy(entry, now)) continue;
+      // Accounts being warmed up wait out their delay (a conversation keeps its account).
+      if (!preferredAccountId && this._isWarming(entry, now)) continue;
       const limit = this.limitFor(entry, capability);
       if (entry.active[capability] >= limit) continue;
-      // Least-loaded first, then fewest uses in the last 24h (spreads work over all
-      // accounts). An awake VM only wins between equally used accounts (waking adds
-      // latency), then least recently used.
+      // Live accounts (connected, awake, warmed up) first; a cold one is only used
+      // when no live account has a free slot. Within a tier: least loaded, then
+      // fewest uses in the last 24h, then least recently used. Cold accounts are
+      // brought up ahead of time by _triggerWarmup.
       const totalActive = entry.active.chat + entry.active.image + entry.active.video;
-      const score = (entry.active[capability] / limit) * 1e9
+      const score = (this._isLive(entry, now) ? 0 : 1e12)
+        + (entry.active[capability] / limit) * 1e9
         + totalActive * 1e6
         + this._recentUseCount(entry, capability, now) * 10
-        + (entry.sleeping ? 5 : 0)
         + entry.lastUsedAt / 1e13;
       if (score < bestScore) {
         best = entry;
@@ -306,6 +371,7 @@ class AccountPool extends EventEmitter {
     if (this.shuttingDown) throw new ApiError(ErrorCodes.SERVICE_SHUTTING_DOWN);
     const excluded = new Set(exclude);
     let lastError = null;
+    if (capability !== 'chat') this._triggerWarmup(capability);
 
     for (let attempt = 0; attempt < Math.max(1, maxFailover); attempt++) {
       let entry;
@@ -321,6 +387,14 @@ class AccountPool extends EventEmitter {
         signal?.throwIfAborted();
         const client = await this._ensureClient(entry, { wake: true });
         signal?.throwIfAborted();
+        // A cold account taken because nothing live was free: let its VM settle first.
+        const settleMs = entry.readyAt - Date.now();
+        if (settleMs > 0 && !preferredAccountId) {
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, settleMs);
+            signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+          });
+        }
         this._recordUse(entry, capability);
         return new Lease(this, entry, capability, client);
       } catch (err) {
@@ -523,6 +597,10 @@ class AccountPool extends EventEmitter {
         cooldownUntil: 0,
         lastUsedAt: 0,
         recentUses: { chat: [], image: [], video: [] },
+        readyAt: 0,
+        readyTimer: null,
+        warming: false,
+        lastWarmupAt: 0,
         reconnectAttempts: 0,
         forceRefresh: false,
         removed: false,
@@ -638,6 +716,8 @@ class AccountPool extends EventEmitter {
     }
 
     entry.client = client;
+    // A token renewed or a VM woken just now: give the VM a minute before it takes work.
+    if (Date.now() - (entry.lastRenewedAt || 0) < 120000) this._holdUntilReady(entry);
     entry.sleeping = false;
     entry.forceRefresh = false;
     entry.reconnectAttempts = 0;
@@ -852,6 +932,7 @@ class AccountPool extends EventEmitter {
 
       const info = describeCredential(result.hybrid);
       entry.doc.credential = result.hybrid;
+      entry.lastRenewedAt = Date.now();
 
       await Account.updateOne(
         { _id: entry.id },
@@ -1071,6 +1152,9 @@ class AccountPool extends EventEmitter {
         active: { ...entry.active },
         limits: { chat: this.limitFor(entry, 'chat'), image: this.limitFor(entry, 'image'), video: this.limitFor(entry, 'video') },
         uses_24h: { chat: this._recentUseCount(entry, 'chat', now), image: this._recentUseCount(entry, 'image', now), video: this._recentUseCount(entry, 'video', now) },
+        live: this._isLive(entry, now),
+        warming: this._isWarming(entry, now),
+        ready_at: entry.readyAt > now ? new Date(entry.readyAt).toISOString() : null,
         consecutive_failures: entry.failures,
         cooldown_until: entry.cooldownUntil > now && entry.cooldownUntil < Number.MAX_SAFE_INTEGER ? new Date(entry.cooldownUntil).toISOString() : null,
         is_renewing: Boolean(entry.isRenewing)
