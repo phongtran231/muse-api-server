@@ -311,7 +311,9 @@ async function loadAccounts() {
       if (isRenewing) {
         statusBadge = `<span class="badge" style="background: rgba(245, 158, 11, 0.18); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3);"><span class="dot-pulse" style="background: #F59E0B;"></span>Auto-Renewing WSS</span>`;
       }
-      const connBadge = isConnected 
+      const connBadge = a.live?.warming
+        ? `<span style="color: #F59E0B; font-weight: 600;" title="Being warmed up; takes work once ready">WARMING${a.live.ready_at ? ` · ready ${new Date(a.live.ready_at).toLocaleTimeString()}` : ''}</span>`
+        : isConnected
         ? '<span style="color: #34D399; font-weight: 600;">CONNECTED</span>'
         : (isRenewing ? '<span style="color: #F59E0B; font-weight: 600;">RENEWING</span>'
           : (a.live?.sleeping ? '<span style="color: #818CF8; font-weight: 600;" title="Meta suspended the idle VM; it is woken when a job needs this account">SLEEPING</span>' : '<span style="color: var(--text-dim);">STANDBY</span>'));
