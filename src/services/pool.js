@@ -210,7 +210,62 @@ class AccountPool extends EventEmitter {
   }
 
   _isHealthy(entry, now = Date.now()) {
-    return entry.status !== 'expired' && entry.cooldownUntil <= now;
+    return entry.status !== 'expired' && entry.cooldownUntil <= now && !this._isQuotaBlocked(entry, now);
+  }
+
+  /** The upstream reported the account out of credits (should_block_llm_inference) and it has not reset yet. */
+  _isQuotaBlocked(entry, now = Date.now()) {
+    const q = entry.doc.quota;
+    if (!q?.blocked) return false;
+    const resetsAt = Date.parse(q.resets_at || '') || 0;
+    return !resetsAt || resetsAt > now;
+  }
+
+  /**
+   * Reads the account's credit / quota state and stores it on the account. Uses
+   * the open connection; with `wake` it connects (and wakes the VM) first,
+   * otherwise a disconnected account keeps its last snapshot. Calls within
+   * `minIntervalMs` of the previous read return the stored snapshot.
+   */
+  async refreshQuota(entry, { wake = false, minIntervalMs = 0 } = {}) {
+    const last = Date.parse(entry.doc.quota?.fetched_at || '') || 0;
+    if (Date.now() - last < minIntervalMs) return entry.doc.quota;
+    if (entry.quotaRefreshing) return entry.quotaRefreshing;
+    const connected = entry.client?.ws && entry.client.ws.readyState === 1;
+    if (!connected && !wake) return entry.doc.quota || null;
+    entry.quotaRefreshing = (async () => {
+      const client = connected ? entry.client : await this._ensureClient(entry, { wake: true });
+      const quota = await client.getQuota();
+      const wasBlocked = this._isQuotaBlocked(entry);
+      entry.doc.quota = quota;
+      await Account.updateOne({ _id: entry.id }, { $set: { quota } }).catch(() => {});
+      if (this._isQuotaBlocked(entry) && !wasBlocked) {
+        log.warn({ account: entry.id, name: entry.doc.name, usage: quota.usage_percent, resetsAt: quota.resets_at }, 'Account is out of credits; skipped until its quota resets');
+      } else if (wasBlocked && !quota.blocked) {
+        for (const capability of CAPABILITIES) this._drain(capability);
+      }
+      return quota;
+    })().finally(() => { entry.quotaRefreshing = null; });
+    return entry.quotaRefreshing;
+  }
+
+  /** Refreshes the quota of every connected account (or every account with `wake`), a few at a time. */
+  async refreshAllQuotas({ wake = false, concurrency = 5 } = {}) {
+    const entries = [...this.entries.values()].filter((e) => !e.removed && e.doc.enabled && (wake || (e.client?.ws && e.client.ws.readyState === 1)));
+    const results = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < entries.length) {
+        const entry = entries[next++];
+        try {
+          results.push({ account_id: entry.id, name: entry.doc.name, quota: await this.refreshQuota(entry, { wake }) });
+        } catch (err) {
+          results.push({ account_id: entry.id, name: entry.doc.name, error: sanitize(err.message) });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, worker));
+    return results;
   }
 
   /** Connected, awake and past its warm-up delay: can take a request right now. */
@@ -258,6 +313,7 @@ class AccountPool extends EventEmitter {
         this._ensureClient(entry, { wake: true })
           .then(() => {
             this._holdUntilReady(entry);
+            this.refreshQuota(entry, { minIntervalMs: 10 * 60 * 1000 }).catch(() => {});
             log.info({ account: entry.id, name: entry.doc.name, readyAt: new Date(entry.readyAt).toISOString() }, 'Account warmed up; available after the warm-up delay');
           })
           .catch((err) => log.warn({ account: entry.id, name: entry.doc.name, err: sanitize(err.message) }, 'Account warm-up failed'))
@@ -501,6 +557,8 @@ class AccountPool extends EventEmitter {
   _finishLease(lease, outcome) {
     const { entry, capability } = lease;
     this._releaseSlot(entry, capability);
+    // Media jobs spend credits: keep the stored quota current.
+    if (capability !== 'chat') this.refreshQuota(entry, { minIntervalMs: 15000 }).catch(() => {});
     entry.pendingStats.requests += 1;
     if (outcome.success) {
       this._reportSuccess(entry);
@@ -726,6 +784,7 @@ class AccountPool extends EventEmitter {
     this._attachClientHandlers(entry, client);
     client.writeFile('AGENTS.md', Buffer.from(ISOLATION_POLICY, 'utf8')).catch(() => {});
     log.info({ account: entry.id, name: entry.doc.name, proxy: proxyLabel(proxy) }, 'Upstream connection established');
+    setImmediate(() => this.refreshQuota(entry, { minIntervalMs: 30 * 60 * 1000 }).catch(() => {}));
     return client;
   }
 

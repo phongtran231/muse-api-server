@@ -295,6 +295,52 @@ async function loadOverview() {
 }
 
 // ---- Accounts Tab ----
+function formatCredits(n) {
+  if (n === null || n === undefined) return '?';
+  if (n >= 1e6) return `${Math.round(n / 1e5) / 10}M`;
+  if (n >= 1e3) return `${Math.round(n / 100) / 10}K`;
+  return String(n);
+}
+
+/** One line per account: plan, weekly usage and reset, top-up credits. */
+function quotaHtml(q) {
+  if (!q) return '<div style="font-size: 11px; color: var(--text-dim); margin-top: 3px;">Quota: not read yet</div>';
+  const pct = q.usage_percent ?? 0;
+  const color = q.blocked ? '#FB7185' : pct >= 80 ? '#F59E0B' : '#34D399';
+  const resets = q.resets_at ? new Date(q.resets_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '?';
+  const title = [q.subtitle, `Weekly ${pct}% (${q.usage_status || '?'})`, q.monthly_usage_percent !== null ? `Monthly ${q.monthly_usage_percent}% (${q.monthly_status || '?'})` : null,
+    `Top-up ${formatCredits(q.topup_balance)} / ${formatCredits(q.topup_total)} (${q.topup_status || '?'})`, `Read ${timeAgo(q.fetched_at)}`].filter(Boolean).join('\n');
+  return `<div style="font-size: 11px; margin-top: 3px; color: ${color};" title="${escapeHtml(title)}">${q.blocked ? 'OUT OF CREDITS · ' : ''}${escapeHtml(q.plan || '?')} · ${pct}% week · resets ${escapeHtml(resets)} · top-up ${formatCredits(q.topup_balance)}</div>`;
+}
+
+async function refreshQuota(id) {
+  try {
+    const res = await api('/account-quotas/refresh', { method: 'POST', body: JSON.stringify({ account_id: id }) });
+    const q = res.data?.[0]?.quota;
+    showToast(q ? `${res.data[0].name}: ${q.usage_percent ?? '?'}% of weekly limit used` : 'Quota refreshed', 'success');
+    loadAccounts();
+  } catch (err) {
+    showToast(`Quota refresh failed: ${err.message}`, 'error');
+  }
+}
+
+document.getElementById('refreshQuotasBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('refreshQuotasBtn');
+  btn.disabled = true;
+  try {
+    const res = await api('/account-quotas/refresh', { method: 'POST', body: JSON.stringify({}) });
+    const rows = res.data || [];
+    const failed = rows.filter((r) => r.error).length;
+    const blocked = rows.filter((r) => r.quota?.blocked).length;
+    showToast(`Quota read for ${rows.length - failed} connected account(s)${failed ? `, ${failed} failed` : ''}${blocked ? `, ${blocked} out of credits` : ''}. Sleeping accounts keep their last snapshot.`, failed ? 'error' : 'success');
+    loadAccounts();
+  } catch (err) {
+    showToast(`Quota refresh failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 async function loadAccounts() {
   try {
     const list = await api('/accounts');
@@ -328,6 +374,7 @@ async function loadAccounts() {
           <td>
             <div class="cell-primary">${escapeHtml(a.name)}</div>
             <div class="font-mono" style="font-size: 11px; color: var(--text-dim);">${escapeHtml(a.id)}</div>
+            ${quotaHtml(a.quota)}
           </td>
           <td><span class="badge badge-offline">${a.credential_type || 'cookie'}</span></td>
           <td>${statusBadge}</td>
@@ -344,6 +391,7 @@ async function loadAccounts() {
             <div class="actions-cell">
               <button class="btn btn-primary btn-sm" onclick="openEditAccountModal('${escapeJsAttr(a.id)}')" title="Configure account & concurrency" style="padding: 4px 8px; font-weight: 600;">Edit</button>
               <button class="btn btn-secondary btn-sm" onclick="testAccount('${escapeJsAttr(a.id)}')" title="Test Connection">Test</button>
+              <button class="btn btn-secondary btn-sm" onclick="refreshQuota('${escapeJsAttr(a.id)}')" title="Read this account's credit / quota (wakes the VM if needed)">Quota</button>
               <button class="btn btn-secondary btn-sm" onclick="refreshAccount('${escapeJsAttr(a.id)}')" title="Renew WSS from Cookie">Renew</button>
               <button class="btn btn-secondary btn-sm" onclick="cleanupSessions('${escapeJsAttr(a.id)}')" title="Clean Threads">Clean</button>
               <button class="btn btn-danger btn-sm" onclick="deleteAccount('${escapeJsAttr(a.id)}', '${escapeJsAttr(a.name)}')" title="Delete Account">Del</button>

@@ -559,6 +559,23 @@ router.post('/api/accounts/:id/refresh', async (req, res, next) => {
   }
 });
 
+// Credit / quota of the accounts. Body: { account_id?: string, wake?: boolean }.
+// Without account_id every connected account is refreshed (wake: true also wakes the others).
+router.post('/api/account-quotas/refresh', async (req, res, next) => {
+  try {
+    const { account_id: accountId, wake } = req.body || {};
+    if (accountId) {
+      const entry = pool.entries.get(accountId);
+      if (!entry) throw new ApiError(ErrorCodes.RESOURCE_NOT_FOUND, { message: 'Account not found' });
+      const quota = await pool.refreshQuota(entry, { wake: true });
+      return res.json({ object: 'list', data: [{ account_id: accountId, name: entry.doc.name, quota }] });
+    }
+    res.json({ object: 'list', data: await pool.refreshAllQuotas({ wake: Boolean(wake) }) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Trigger automated self-healing / recovery for all accounts with cookies
 router.post('/api/accounts/recover-all', async (req, res, next) => {
   try {

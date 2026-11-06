@@ -1877,6 +1877,35 @@ class MuseClient extends EventEmitter {
   }
 
   /**
+   * Credit / quota state of the account, read from the VM route
+   * GET /api/subscription/quota (found in the VM's /api/openapi.json). Upstream
+   * timestamps are epoch seconds.
+   */
+  async getQuota() {
+    const res = await this.sendRequest('GET', '/api/subscription/quota', null, [], false);
+    if (res.status !== 200) throw new Error(`Failed to read the account quota: HTTP ${res.status}`);
+    const r = JSON.parse(res.body).result || {};
+    const at = (sec) => (sec ? new Date(sec * 1000).toISOString() : null);
+    return {
+      plan: r.subscription_tier_name || r.plan?.name || null,
+      tier: r.subscription_tier || null,
+      has_active_subscription: Boolean(r.has_active_subscription),
+      usage_percent: r.subscription_usage_percentage ?? null,
+      usage_status: r.subscription_usage_quota_status || null,
+      resets_at: at(r.subscription_usage_resets_at),
+      monthly_usage_percent: r.monthly_usage_percentage ?? null,
+      monthly_status: r.monthly_credits_status || null,
+      monthly_resets_at: at(r.monthly_next_refill_at),
+      topup_balance: r.topup_balance ?? null,
+      topup_total: r.topup_total ?? null,
+      topup_status: r.topup_credits_status || null,
+      blocked: Boolean(r.should_block_llm_inference),
+      subtitle: r.status_subtitle || null,
+      fetched_at: new Date().toISOString()
+    };
+  }
+
+  /**
    * List all sessions / threads currently recorded on Meta VM
    * @returns {Promise<Array>} List of session objects
    */

@@ -42,6 +42,8 @@ const AccountSchema = new mongoose.Schema(
       requests: { type: Number, default: 0 },
       failures: { type: Number, default: 0 }
     },
+    // Last credit / quota snapshot from the upstream (pool.refreshQuota).
+    quota: { type: mongoose.Schema.Types.Mixed, default: null },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }, versionKey: false }

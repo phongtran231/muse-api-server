@@ -112,6 +112,7 @@ function serializeAccount(doc, live = null) {
     last_error: doc.last_error?.code ? { code: doc.last_error.code, message: doc.last_error.message, at: iso(doc.last_error.at) } : null,
     last_connected_at: iso(doc.last_connected_at),
     stats: { requests: doc.stats?.requests || 0, failures: doc.stats?.failures || 0 },
+    quota: doc.quota || null,
     metadata: doc.metadata || {},
     created_at: iso(doc.created_at),
     updated_at: iso(doc.updated_at)
