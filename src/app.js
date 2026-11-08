@@ -21,6 +21,7 @@ const { safeEqual } = require('./utils/crypto');
 const { buildOpenApiSpec } = require('./docs/openapi');
 const healthRouter = require('./routes/health');
 const v1Router = require('./routes');
+const jobsApiRouter = require('./routes/jobsApi');
 const { ApiError, ErrorCodes } = require('./errors');
 
 function createApp() {
@@ -114,6 +115,9 @@ function createApp() {
 
   // ---- Versioned API -----------------------------------------------------
   app.use('/v1', v1Router);
+
+  // ---- VN91 jobs API (POST /api/jobs, GET /api/jobs/:id) ------------------
+  app.use('/api/jobs', jobsApiRouter);
 
   app.use(notFound);
   app.use(errorHandler);

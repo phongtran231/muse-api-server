@@ -195,8 +195,10 @@ function referenceInstructions(hints) {
   if (!Array.isArray(hints)) return '';
   return hints.map((hint, index) => {
     if (!hint || typeof hint !== 'object') return '';
-    const tag = `[Reference Image ${hint.image_index || index + 1}]`;
+    const label = typeof hint.label === 'string' && hint.label.trim() ? ` (${hint.label.trim().slice(0, 40)})` : '';
+    const tag = `[Reference Image ${hint.image_index || index + 1}]${label}`;
     const weight = Number.isFinite(hint.weight) ? ` Reference weight: ${hint.weight}.` : '';
+    if (hint.role === 'edit_source') return `${tag} is the photo to edit: change only what the request asks and keep the same person, with an identical face, facial features, hair and body.`;
     if (hint.role === 'first_frame') return `${tag} is the required opening frame; begin the video from this image and preserve its composition and subject identity.`;
     if (hint.type === 'face') {
       const lock = hint.lock === true ? 'Lock the face identity to this reference; do not change facial features.' : 'Use this as the face identity reference and keep the same person throughout.';
@@ -1733,8 +1735,12 @@ class MuseClient extends EventEmitter {
     const aspectRatio = options.aspect_ratio || options.aspectRatio;
     const ratioHint = aspectRatio ? ` (aspect ratio ${aspectRatio})` : '';
 
+    const editsFirstImage = refImages.length > 0 && options.reference_image_hints?.[0]?.role === 'edit_source';
     let formattedPrompt = `Generate an image: ${prompt}${ratioHint}`;
-    if (refImages.length) {
+    if (editsFirstImage) {
+      // Image editing: the result must be [Reference Image 1] itself, edited, not a newly drawn person.
+      formattedPrompt = `${refImagesNote(refImages.length)} Edit [Reference Image 1]: the result must be that same photo of the same person, edited as requested, not a newly drawn person. Keep the face exactly identical (facial features, skin, hair, expression unless asked). ${refImages.length > 1 ? 'The other images show what the request refers to (products, places, styles). ' : ''}Edit request: ${prompt}${ratioHint}`;
+    } else if (refImages.length) {
       formattedPrompt = `${refImagesNote(refImages.length)} Use them as visual references: keep the identity, appearance and details of the people, products and objects they show. Generate a new image that follows this request: ${prompt}${ratioHint}`;
     } else if (refVideo) {
       formattedPrompt = `Using the attached reference video, generate a new image that follows this request: ${prompt}${ratioHint}`;

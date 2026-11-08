@@ -61,7 +61,7 @@ async function contentAccess(req, res, next) {
 }
 
 router
-  .route('/:id/content')
+  .route(['/:id/content', '/:id/content.:ext'])
   .get(validate(idParamSchema, 'params'), contentAccess, async (req, res) => {
     const doc = await storage.getFileOrThrow(req.params.id, { apiKeyId: req.signedAccess || req.auth.isAdmin ? null : req.auth.apiKey._id, param: 'id' });
     await storage.sendStoredFile(res, doc, { download: req.query.download === '1' || req.query.download === 'true' });
