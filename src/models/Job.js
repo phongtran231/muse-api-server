@@ -18,8 +18,7 @@ const JobSchema = new mongoose.Schema(
     type: { type: String, enum: JOB_TYPES, required: true },
     api_key_id: { type: String, required: true },
     status: { type: String, enum: JOB_STATUSES, default: 'queued' },
-    // /v1 endpoints accept up to 4000 characters; the VN91 jobs API up to 10000.
-    prompt: { type: String, required: true, maxlength: 10000 },
+    prompt: { type: String, required: true, maxlength: 4000 },
     params: {
       model: { type: String, default: null },
       mode: { type: String, default: null },

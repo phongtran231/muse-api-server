@@ -49,11 +49,8 @@ function terminalError(job) {
  * @param {object} spec.params               Job params (aspect_ratio, duration, response_format).
  * @param {{images?: string[], video?: string}} spec.references  Raw reference values (images in [Reference Image n] order).
  * @param {(job: object, res: object) => Promise<void>|void} spec.onSucceeded  Sync success renderer.
- * @param {string} [spec.prompt]             Prompt to store (defaults to body.prompt).
- * @param {number} [spec.maxAttempts]        Attempts for this job (defaults to JOB_MAX_ATTEMPTS).
- * @param {(job: object, res: object, replayed: boolean) => any} [spec.onAccepted]  Async response renderer.
  */
-async function submitGeneration(req, res, { type, sync, params, references, onSucceeded, prompt, maxAttempts, onAccepted }) {
+async function submitGeneration(req, res, { type, sync, params, references, onSucceeded }) {
   const body = req.valid.body;
   const apiKey = req.auth.apiKey;
   const idempotencyKey = readIdempotencyKey(req);
@@ -83,9 +80,8 @@ async function submitGeneration(req, res, { type, sync, params, references, onSu
     const created = await dispatcher.createJob({
       apiKey,
       type,
-      prompt: prompt ?? body.prompt,
+      prompt: body.prompt,
       params,
-      maxAttempts,
       reference,
       webhookUrl,
       idempotencyKey,
@@ -96,7 +92,7 @@ async function submitGeneration(req, res, { type, sync, params, references, onSu
     replayed = created.replayed;
   }
 
-  if (!sync) return onAccepted ? onAccepted(job, res, replayed) : sendAccepted(res, job, replayed);
+  if (!sync) return sendAccepted(res, job, replayed);
 
   if (!TERMINAL.has(job.status)) {
     const waited = await dispatcher.waitForTerminal(job._id, config.jobs.syncWaitMaxMs);

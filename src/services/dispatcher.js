@@ -31,7 +31,6 @@ const { Job, TERMINAL_STATUSES } = require('../models');
 const { pool } = require('./pool');
 const storage = require('./storage');
 const media = require('./media');
-const videoChain = require('./videoChain');
 const usage = require('./usage');
 const webhook = require('./webhook');
 const { serializeJob } = require('../serializers');
@@ -170,7 +169,7 @@ class Dispatcher extends EventEmitter {
    * Persists a new queued job.
    * @returns {Promise<{ job: object, replayed: boolean }>}
    */
-  async createJob({ apiKey, type, prompt, params, reference, webhookUrl, idempotencyKey, fingerprint, metadata, maxAttempts }) {
+  async createJob({ apiKey, type, prompt, params, reference, webhookUrl, idempotencyKey, fingerprint, metadata }) {
     const queueTimeout = config.jobs[type].queueTimeoutMs;
     try {
       const doc = await Job.create({
@@ -183,7 +182,7 @@ class Dispatcher extends EventEmitter {
         idempotency_key: idempotencyKey || null,
         request_fingerprint: fingerprint || null,
         metadata: metadata || {},
-        max_attempts: maxAttempts || config.jobs.maxAttempts,
+        max_attempts: config.jobs.maxAttempts,
         queue_deadline: queueTimeout > 0 ? new Date(Date.now() + queueTimeout) : null
       });
       this.pendingCount += 1;
@@ -355,42 +354,33 @@ class Dispatcher extends EventEmitter {
       const isVideo = job.type === 'video';
       const timeout = config.jobs[job.type].timeoutMs;
       const onProgress = (text) => this._onProgress(ctx, text);
-      const videoOptions = (images, hints, duration, mode = job.params?.mode) => ({
-        ref_images: images,
-        ref_video: references.video,
-        aspect_ratio: job.params?.aspect_ratio || undefined,
-        duration: duration || undefined,
-        mode: mode || undefined,
-        style: job.params?.style || undefined,
-        negative_prompt: job.params?.negative_prompt || undefined,
-        reference_image_hints: hints,
-        timeout,
-        signal: ctx.controller.signal,
-        maxBytes: config.storage.maxVideoBytes,
-        onProgress
-      });
-      // The upstream renders at most 10 s per request: longer videos are rendered in parts.
-      const chained = isVideo && !references.video && Number(job.params?.duration) > videoChain.MAX_PART_SECONDS;
+      const call = isVideo
+        ? ctx.lease.client.generateVideo(prompt, {
+          ref_images: references.images,
+          ref_video: references.video,
+          aspect_ratio: job.params?.aspect_ratio || undefined,
+          duration: job.params?.duration || undefined,
+          mode: job.params?.mode || undefined,
+          style: job.params?.style || undefined,
+          negative_prompt: job.params?.negative_prompt || undefined,
+          reference_image_hints: referenceImageHints,
+          timeout,
+          signal: ctx.controller.signal,
+          maxBytes: config.storage.maxVideoBytes,
+          onProgress
+        })
+        : ctx.lease.client.generateImage(prompt, {
+          ref_images: references.images,
+          reference_image_hints: referenceImageHints,
+          aspect_ratio: job.params?.aspect_ratio || undefined,
+          timeout,
+          signal: ctx.controller.signal,
+          maxBytes: config.storage.maxImageBytes,
+          onProgress
+        });
 
       // Hard guard on top of the client's own timeout (covers the download phase).
-      const result = chained
-        ? await this._renderChained(ctx, { prompt, references, referenceImageHints, timeout, videoOptions })
-        : await withTimeout(
-          isVideo
-            ? ctx.lease.client.generateVideo(prompt, videoOptions(references.images, referenceImageHints, job.params?.duration))
-            : ctx.lease.client.generateImage(prompt, {
-              ref_images: references.images,
-              reference_image_hints: referenceImageHints,
-              aspect_ratio: job.params?.aspect_ratio || undefined,
-              timeout,
-              signal: ctx.controller.signal,
-              maxBytes: config.storage.maxImageBytes,
-              onProgress
-            }),
-          timeout + 60000,
-          `${isVideo ? 'Video' : 'Image'} generation timed out.`,
-          ctx.controller
-        );
+      const result = await withTimeout(call, timeout + 60000, `${isVideo ? 'Video' : 'Image'} generation timed out.`, ctx.controller);
       ctx.controller.signal.throwIfAborted();
 
       if (!result?.success) {
@@ -497,66 +487,6 @@ class Dispatcher extends EventEmitter {
     });
     log.info({ job: job._id, sent: images.length, attached: references.images.length }, 'Duplicate reference images removed before sending');
     return { references: { ...references, images }, prompt, referenceImageHints };
-  }
-
-  /**
-   * Renders a video longer than one upstream clip as consecutive parts on the
-   * same account: each part after the first starts from the previous part's
-   * last frame (it takes the place of the opening frame, or is attached as an
-   * extra reference when the job has none), then the parts are joined into one
-   * MP4 of exactly the requested length.
-   */
-  async _renderChained(ctx, { prompt, references, referenceImageHints, timeout, videoOptions }) {
-    const { job } = ctx;
-    const total = Number(job.params.duration);
-    const parts = videoChain.planParts(total);
-    const hints = referenceImageHints || [];
-    const opening = hints.find((h) => h?.role === 'first_frame');
-    const openingPos = opening ? (opening.image_index || hints.indexOf(opening) + 1) - 1 : -1;
-    const buffers = [];
-    let text = '';
-    let start = 0;
-    for (let i = 0; i < parts.length; i += 1) {
-      ctx.controller.signal.throwIfAborted();
-      let images = references.images;
-      let partHints = hints;
-      let frameTag = null;
-      if (i > 0) {
-        const frame = await videoChain.lastFrame(buffers[i - 1]);
-        const payload = { mime_type: 'image/jpeg', data_base64: frame.toString('base64'), filename: `part-${i + 1}-start.jpg` };
-        if (openingPos >= 0) {
-          images = references.images.map((img, k) => (k === openingPos ? payload : img));
-          frameTag = openingPos + 1;
-        } else {
-          images = [...references.images, payload];
-          partHints = [...hints, { type: 'image', role: 'first_frame', image_index: images.length }];
-          frameTag = images.length;
-        }
-      }
-      const end = start + parts[i];
-      const note = `\n\nThis request is part ${i + 1} of ${parts.length} of one continuous ${total}-second video. Generate only seconds ${start}-${end} of it (${parts[i]} s).`
-        + (i === 0
-          ? ' The following parts will continue from its last frame.'
-          : ` It continues directly from the previous part: [Reference Image ${frameTag}] is that part's last frame, so start exactly from it and keep the same people, faces, outfit, place, lighting, camera framing and voice, continuing the action and dialogue from there.`);
-      ctx.progressText = `Rendering part ${i + 1}/${parts.length}`;
-      log.info({ job: job._id, part: i + 1, parts: parts.length, seconds: parts[i] }, 'Rendering video part');
-      const mode = i > 0 ? 'image_to_video' : job.params?.mode;
-      const result = await withTimeout(
-        ctx.lease.client.generateVideo(`${prompt}${note}`, videoOptions(images, partHints, parts[i], mode)),
-        timeout + 60000,
-        `Video generation timed out (part ${i + 1}/${parts.length}).`,
-        ctx.controller
-      );
-      ctx.controller.signal.throwIfAborted();
-      if (!result?.success) return result;
-      if (!result.buffer?.length) return { success: true, buffer: null };
-      buffers.push(result.buffer);
-      text = result.text || text;
-      start = end;
-    }
-    ctx.progressText = 'Joining parts';
-    const buffer = await videoChain.concatParts(buffers, total);
-    return { success: true, buffer, mimeType: 'video/mp4', text };
   }
 
   _onProgress(ctx, text) {

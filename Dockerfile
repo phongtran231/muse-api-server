@@ -24,7 +24,6 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
-    ffmpeg \
   && mkdir -p /data/storage \
   && chown -R node:node /data
 
