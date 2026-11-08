@@ -4,8 +4,9 @@
 # pulls main and then execs this script).
 set -euo pipefail
 
-CONTAINER=muse-api-server-api-1
-MONGO=muse-api-server-mongo-1
+# Container names differ per host (compose project); override with env vars.
+CONTAINER=${CONTAINER:-muse-api-server-api-1}
+MONGO=${MONGO:-muse-api-server-mongo-1}
 JOB_WAIT_SECONDS=${JOB_WAIT_SECONDS:-600}
 HEALTH_WAIT_SECONDS=${HEALTH_WAIT_SECONDS:-180}
 
