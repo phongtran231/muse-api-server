@@ -1029,6 +1029,15 @@ class AccountPool extends EventEmitter {
    * possessing an attached cookie, and auto-renews them.
    */
   async autoRecoverUnusableAccounts({ force = false } = {}) {
+    // The 45s watchdog interval must not start a sweep while the previous one is still running.
+    if (this._recovering) return this._recovering;
+    this._recovering = this._autoRecoverUnusableAccounts({ force }).finally(() => {
+      this._recovering = null;
+    });
+    return this._recovering;
+  }
+
+  async _autoRecoverUnusableAccounts({ force }) {
     const results = [];
     const now = Date.now();
 

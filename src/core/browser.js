@@ -286,7 +286,20 @@ function serializeCookies(cookieList = []) {
  * @param {string} [options.executablePath] Optional manual path to Chromium executable
  * @returns {Promise<{ success: boolean, wsUrl: string, expiry: number|null, vmId: string|null, refreshedCookies: string, hybrid: string, extractedVia: string }>}
  */
-async function extractWssViaChromium(cookieString, options = {}) {
+// Every Chromium instance costs hundreds of MB, and many callers (pool warm-up, watchdog,
+// keep-alive, MuseClient.bootstrap) can ask at once. Serialize them: one browser at a time.
+let browserQueue = Promise.resolve();
+let browserQueueLength = 0;
+
+function extractWssViaChromium(cookieString, options = {}) {
+  browserQueueLength += 1;
+  if (browserQueueLength > 1) console.log(`[Browser] Waiting for the running Chromium to finish (${browserQueueLength - 1} ahead)`);
+  const run = browserQueue.then(() => runChromiumExtraction(cookieString, options));
+  browserQueue = run.catch(() => {}).finally(() => { browserQueueLength -= 1; });
+  return run;
+}
+
+async function runChromiumExtraction(cookieString, options = {}) {
   options = { ...options, proxy: resolveProxy(options.proxy) };
   const clean = extractCookie(cookieString) || cookieString;
   if (!clean || typeof clean !== 'string' || !clean.includes('hatch_sess=')) {
@@ -479,7 +492,15 @@ async function extractWssViaChromium(cookieString, options = {}) {
     if (checkInterval) clearInterval(checkInterval);
     if (timerId) clearTimeout(timerId);
     if (browser) {
-      await browser.close().catch(() => {});
+      // A hung close() would hold the queue forever; kill the process if it doesn't exit quickly.
+      const proc = browser.process();
+      await Promise.race([
+        browser.close().catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 5000))
+      ]);
+      if (proc && proc.exitCode === null && proc.signalCode === null) {
+        try { proc.kill('SIGKILL'); } catch (e) {}
+      }
     }
   }
 }
