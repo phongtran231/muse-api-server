@@ -401,17 +401,19 @@ test('reference images are sent upstream in order and numbered in the prompt', a
     c.deleteSession = async () => ({ ok: true });
     await c[kind === 'image' ? 'generateImage' : 'generateVideo']('[Reference Image 1] holds [Reference Image 3]', { ref_image: a, ref_images: [b, c3] });
     assert.deepEqual([...seen.options.ref_images], [a, b, c3]);
-    assert.match(seen.prompt, /3 reference images are attached/);
-    assert.match(seen.prompt, /image #3 is \[Reference Image 3\]/);
+    assert.match(seen.prompt, /download all 3 images first/);
+    assert.match(seen.prompt, new RegExp(`\\[Reference Image 1\\]: ${a.url}\\n\\[Reference Image 2\\]: ${b.url}\\n\\[Reference Image 3\\]: ${c3.url}`));
     assert.match(seen.prompt, /\[Reference Image 1\] holds \[Reference Image 3\]/);
   }
 
+  // Muse hangs on `{type:'image', url}` items: URLs travel in the prompt text only.
   const c = client();
   let payload = null;
   c.sendRequest = async (method, route, body) => { payload = body; throw new Error('stop'); };
-  await assert.rejects(c.chat('hello', { ref_images: [a, b, c3], timeout: 1000 }), /stop/);
-  assert.deepEqual([...payload.items.map((it) => it.type === 'image' ? it.url : it.type)], [a.url, b.url, c3.url, 'text']);
-  assert.ok(payload.items.filter(it => it.type === 'image').every(it => !Object.hasOwn(it, 'data_base64')));
+  await assert.rejects(c.chat('hello', { ref_images: [a, b, c3], items: [{ type: 'image', url: a.url }, { type: 'image', url: b.url }], timeout: 1000 }), /stop/);
+  assert.deepEqual([...payload.items.map((it) => it.type)], ['text']);
+  assert.match(payload.items[0].text, new RegExp(`Image 1: ${a.url}\\nImage 2: ${b.url}[\\s\\S]*hello$`));
+  assert.ok(!JSON.stringify(payload).includes('data_base64'));
 });
 
 test('bootstrap refuses a suspended VM instead of issuing a WSS URL that fails with 502', async () => {

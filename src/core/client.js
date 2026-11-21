@@ -182,12 +182,22 @@ const NO_MEDIA_REPLY_RE = /\b(couldn['’]?t|could not|can['’]?t|cannot|unable
 const NO_MEDIA_REPLY_SETTLE_MS = 15000;
 
 /** Tells the model how attached images map to "[Reference Image n]" tags in the prompt. */
-function refImagesNote(count) {
-  if (count === 1) {
-    return 'One reference image is attached; it is [Reference Image 1].';
+// Muse ignores `{type:'image', url}` chat items: the turn never starts and hangs
+// until the timeout. Reference images are therefore passed as URLs in the prompt
+// and the agent downloads them itself (verified: a few seconds per image).
+function refImageUrl(ref) {
+  const url = typeof ref === 'string' ? ref : ref?.url;
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    throw new Error('Image references must be HTTP(S) URLs.');
   }
-  const order = Array.from({ length: count }, (_, i) => `image #${i + 1} is [Reference Image ${i + 1}]`).join(', ');
-  return `${count} reference images are attached in this order: ${order}. Whenever the request mentions [Reference Image n], it means the n-th attached image.`;
+  return url;
+}
+
+/** Tells the model where to download the reference images and how they map to "[Reference Image n]". */
+function refImagesNote(refs) {
+  const urls = refs.map(refImageUrl);
+  const list = urls.map((url, i) => `[Reference Image ${i + 1}]: ${url}`).join('\n');
+  return `Reference images: download ${urls.length === 1 ? 'this image' : `all ${urls.length} images`} first and look at ${urls.length === 1 ? 'it' : 'them'} before you start. Whenever the request mentions [Reference Image n], it means the n-th image below.\n${list}\n`;
 }
 
 /** Reference roles are prompt instructions for the chat-based upstream. */
@@ -1631,14 +1641,10 @@ class MuseClient extends EventEmitter {
 
       const items = [];
 
-      // 1. Process Reference Images in order (item n = [Reference Image n] in the prompt)
-      for (const ref of collectRefImages(options)) {
-        const url = typeof ref === 'string' ? ref : ref?.url;
-        if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
-          throw new Error('Image references must be HTTP(S) URLs.');
-        }
-        items.push({ type: 'image', url });
-      }
+      // 1. Reference images travel as URLs inside the prompt (see refImagesNote),
+      //    never as image items. Validate them here.
+      collectRefImages(options).forEach(refImageUrl);
+      const attachedImageUrls = [];
 
       // 2. Process Reference Video / File if provided
       if (options.ref_video || options.refVideo) {
@@ -1661,22 +1667,23 @@ class MuseClient extends EventEmitter {
       // 3. Merge custom items if provided
       if (Array.isArray(options.items)) {
         for (const it of options.items) {
-          if (it.type === 'image' && (typeof it.url !== 'string' || !/^https?:\/\//i.test(it.url))) {
-            throw new Error('Image attachments must use HTTP(S) URLs.');
+          if (it.type === 'image') {
+            const url = refImageUrl(it);
+            if (!attachedImageUrls.includes(url)) attachedImageUrls.push(url);
+            continue;
           }
-          const duplicate = it.type === 'image' && it.url
-            ? items.some((ex) => ex.type === 'image' && ex.url === it.url)
-            : items.some((ex) => ex.data_base64 && ex.data_base64 === it.data_base64);
-          if (!duplicate) {
+          if (!items.some((ex) => ex.data_base64 && ex.data_base64 === it.data_base64)) {
             items.push(it);
           }
         }
       }
 
-      // 4. Append prompt text
-      if (prompt && prompt.trim()) {
-        items.push({ type: 'text', text: prompt.trim() });
-      }
+      // 4. Append prompt text (chat image attachments become download instructions)
+      const text = [
+        attachedImageUrls.length ? `The user attached ${attachedImageUrls.length === 1 ? 'an image' : `${attachedImageUrls.length} images`}. Download and look at ${attachedImageUrls.length === 1 ? 'it' : 'them'} before answering:\n${attachedImageUrls.map((url, i) => `Image ${i + 1}: ${url}`).join('\n')}` : '',
+        prompt && prompt.trim()
+      ].filter(Boolean).join('\n\n');
+      if (text) items.push({ type: 'text', text });
 
       const requestPayload = {
         items,
@@ -1718,7 +1725,7 @@ class MuseClient extends EventEmitter {
 
     let formattedPrompt = `Generate an image: ${prompt}${ratioHint}`;
     if (refImages.length) {
-      formattedPrompt = `${refImagesNote(refImages.length)} Use them as visual references: keep the identity, appearance and details of the people, products and objects they show. Generate a new image that follows this request: ${prompt}${ratioHint}`;
+      formattedPrompt = `${refImagesNote(refImages)} Use them as visual references: keep the identity, appearance and details of the people, products and objects they show. Generate a new image that follows this request: ${prompt}${ratioHint}`;
     } else if (refVideo) {
       formattedPrompt = `Using the attached reference video, generate a new image that follows this request: ${prompt}${ratioHint}`;
     }
@@ -1793,7 +1800,7 @@ class MuseClient extends EventEmitter {
 
     let formattedPrompt = `Create a high quality motion video based on this prompt: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
     if (refImages.length) {
-      formattedPrompt = `${refImagesNote(refImages.length)} Use them as visual references: the people, products and objects in the video must look exactly like in these images. Create a smooth, high quality motion video: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
+      formattedPrompt = `${refImagesNote(refImages)} Use them as visual references: the people, products and objects in the video must look exactly like in these images. Create a smooth, high quality motion video: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
     } else if (refVideo) {
       formattedPrompt = `Based on the attached reference video (Video-to-Video), regenerate a motion video with dynamic effects: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s.`;
     }
