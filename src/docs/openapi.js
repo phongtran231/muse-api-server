@@ -44,14 +44,15 @@ the \`admin\` scope.
 * Every response includes an \`X-Request-Id\` header; include it when contacting support.
 
 ## Reference media
-Wherever a reference is accepted (\`first_frame_image\`, \`reference_images[].image\`,
-\`reference_video\`, \`image_url.url\`, \`video_url.url\`) you may pass:
-1. a file ID from \`POST /v1/files\` (recommended for large media),
-2. a public \`https://\` URL, or
-3. a base64 data URI (\`data:image/png;base64,...\`).
+Image reference fields (\`first_frame_image\`, \`reference_images[].image\`,
+\`image_url.url\`) accept only HTTP(S) URLs. File IDs and data URIs are rejected for
+images. The server forwards image URLs to Muse unchanged, without downloading or
+base64-encoding them. Video references (\`reference_video\`, \`video_url.url\`) may still
+use a file ID, an HTTP(S) URL, or a base64 data URI.
 
-Limits: images up to ${Math.round(config.storage.maxImageBytes / 1048576)} MB (JPEG, PNG, WEBP, GIF),
-videos up to ${Math.round(config.storage.maxVideoBytes / 1048576)} MB (MP4, MOV, WEBM).
+Image URLs must be reachable by Muse and return a supported image format (JPEG, PNG,
+WEBP, or GIF). Video files are limited to ${Math.round(config.storage.maxVideoBytes / 1048576)} MB
+(MP4, MOV, WEBM) when resolved by this server.
 
 ### Reference images (\`reference_images\`)
 Image and video generation accept \`reference_images\`: an ordered array of objects
@@ -59,10 +60,11 @@ with \`image\`, \`type\` (\`image\`, \`face\`, or \`product\`; default \`image\`
 optional \`weight\` (0–1), and optional \`lock\`.
 Use \`face\` to preserve a person's identity and \`product\` to preserve a product's
 shape, proportions, colors, materials, branding, and distinctive details.
-Public image URLs work directly. The n-th attached image is \`[Reference Image n]\`,
+Public image URLs are forwarded unchanged; keep them reachable while queued jobs run.
+The n-th attached image is \`[Reference Image n]\`,
 so a prompt can refer to a person in image 1 holding the product in image 2.
 Videos may also specify \`first_frame_image\`, attached before \`reference_images\`.
-At most 10 image entries total are accepted. Identical images are attached once,
+At most 10 image entries total are accepted. Repeated image URLs are attached once,
 retaining all roles. Image references cannot be combined with \`reference_video\`.
 
 Migration: \`refs\` and \`reference_image\` are no longer accepted by generation
@@ -404,7 +406,8 @@ function buildOpenApiSpec() {
           }
         },
         Metadata: { type: 'object', additionalProperties: { type: ['string', 'number', 'boolean', 'null'] }, maxProperties: 16, description: 'Up to 16 key/value pairs (keys <= 40 chars, string values <= 500 chars).' },
-        Reference: { type: 'string', description: 'File ID (`file_...`), public https URL, or base64 data URI.' },
+        Reference: { type: 'string', description: 'File ID (`file_...`), HTTP(S) URL, or base64 data URI.' },
+        ImageURL: { type: 'string', format: 'uri', pattern: '^https?://', maxLength: 2048, description: 'HTTP(S) URL only. File IDs and data URIs are not accepted for image references.' },
         Deleted: { type: 'object', properties: { id: { type: 'string' }, object: { type: 'string' }, deleted: { const: true } } },
 
         ChatMessage: {
@@ -420,7 +423,7 @@ function buildOpenApiSpec() {
                   items: {
                     oneOf: [
                       { type: 'object', required: ['type', 'text'], properties: { type: { const: 'text' }, text: { type: 'string' } } },
-                      { type: 'object', required: ['type', 'image_url'], properties: { type: { const: 'image_url' }, image_url: { type: 'object', required: ['url'], properties: { url: ref('Reference') } } } },
+                      { type: 'object', required: ['type', 'image_url'], properties: { type: { const: 'image_url' }, image_url: { type: 'object', required: ['url'], properties: { url: ref('ImageURL') } } } },
                       { type: 'object', required: ['type', 'video_url'], properties: { type: { const: 'video_url' }, video_url: { type: 'object', required: ['url'], properties: { url: ref('Reference') } } } }
                     ]
                   }
@@ -480,7 +483,7 @@ function buildOpenApiSpec() {
           type: 'object', required: ['image'], additionalProperties: false,
           properties: {
             type: { type: 'string', enum: ['image', 'face', 'product'], default: 'image' },
-            image: ref('Reference'),
+            image: ref('ImageURL'),
             weight: { type: 'number', minimum: 0, maximum: 1 },
             lock: { type: 'boolean' }
           }
@@ -524,7 +527,7 @@ function buildOpenApiSpec() {
             duration: { type: 'integer', minimum: 3, maximum: 10, default: 5, description: 'Seconds.' },
             style: { type: 'string', maxLength: 500 },
             negative_prompt: { type: 'string', maxLength: 1000 },
-            first_frame_image: ref('Reference'),
+            first_frame_image: ref('ImageURL'),
             reference_images: { type: 'array', items: ref('ReferenceImage'), minItems: 1, maxItems: 10, description: 'Ordered reference images after first_frame_image; at most 10 image entries total.' },
             reference_video: ref('Reference'),
             async: { type: 'boolean', default: true },
@@ -543,7 +546,7 @@ function buildOpenApiSpec() {
             progress_text: { type: ['string', 'null'] },
             prompt: { type: 'string' },
             params: { type: 'object' },
-            reference: { type: 'object' },
+            reference: { type: 'object', properties: { image_urls: { type: 'array', items: ref('ImageURL') }, image_file_id: { type: ['string', 'null'] }, image_file_ids: { type: 'array', items: { type: 'string' } }, video_file_id: { type: ['string', 'null'] } } },
             output: {
               type: ['object', 'null'],
               properties: { file_id: { type: 'string' }, url: { type: 'string', description: 'Signed URL; no API key needed until it expires.' }, url_expires_at: { type: 'string', format: 'date-time' }, mime_type: { type: 'string' }, bytes: { type: 'integer' }, text: { type: ['string', 'null'] } }

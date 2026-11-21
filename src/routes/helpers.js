@@ -21,6 +21,16 @@ const metadataSchema = z
 /** A reference media value: file ID, http(s) URL, or base64 data URI. */
 const referenceSchema = z.string().min(1).max(60 * 1024 * 1024);
 
+/** Image references must come from an HTTP(S) URL; data URIs and file IDs are not accepted. */
+const imageUrlSchema = z.string().url().max(2048).refine((value) => {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}, 'Image must be an HTTP(S) URL without embedded credentials.');
+
 /** Max reference images per generation request. */
 const MAX_REFS = 10;
 
@@ -30,7 +40,7 @@ const MAX_REFS = 10;
  */
 const referenceImageSchema = z.object({
   type: z.enum(['image', 'face', 'product']).default('image'),
-  image: referenceSchema,
+  image: imageUrlSchema,
   weight: z.number().min(0).max(1).optional(),
   lock: z.boolean().optional()
 }).strict();
@@ -104,6 +114,7 @@ module.exports = {
   z,
   metadataSchema,
   referenceSchema,
+  imageUrlSchema,
   referenceImagesSchema,
   normalizeReferenceImages,
   MAX_REFS,

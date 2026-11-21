@@ -231,18 +231,11 @@ const config = Object.freeze({
   }),
 
   webhooks: Object.freeze({
+    // Off by default: no outbox polling and webhook_url is ignored on job creation.
+    enabled: bool('WEBHOOKS_ENABLED', false),
     timeoutMs: int('WEBHOOK_TIMEOUT_MS', 10000, { min: 1000, max: 60000 }),
     maxAttempts: int('WEBHOOK_MAX_ATTEMPTS', 5, { min: 1, max: 20 }),
     allowPrivateTargets: bool('WEBHOOK_ALLOW_PRIVATE_TARGETS', false)
-  }),
-
-  browser: Object.freeze({
-    // Custom Chromium / Chrome executable path. If unset, automatically detects on Windows/Linux/macOS.
-    executablePath: str('CHROMIUM_PATH', str('CHROME_PATH', str('PUPPETEER_EXECUTABLE_PATH', ''))),
-    // Maximum time (ms) to wait for WebSocket extraction from the browser.
-    timeoutMs: int('BROWSER_TIMEOUT_MS', 35000, { min: 5000, max: 120000 }),
-    // Run browser in headless mode (default: true).
-    headless: bool('BROWSER_HEADLESS', true)
   }),
 
   // Chat Media Guard: blocks image/video generation through /v1/chat/completions.

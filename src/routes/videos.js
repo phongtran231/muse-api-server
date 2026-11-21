@@ -14,7 +14,7 @@ const { requireScope } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { methodNotAllowed } = require('../middleware/errorHandler');
 const { serializeJob } = require('../serializers');
-const { z, metadataSchema, referenceSchema, referenceImagesSchema, normalizeReferenceImages, MAX_REFS } = require('./helpers');
+const { z, metadataSchema, referenceSchema, imageUrlSchema, referenceImagesSchema, normalizeReferenceImages, MAX_REFS } = require('./helpers');
 const { submitGeneration } = require('./generation');
 
 const router = express.Router();
@@ -31,7 +31,7 @@ const videoRequestSchema = z
     duration: z.number().int().min(3).max(10).default(5),
     style: z.string().trim().max(500).optional(),
     negative_prompt: z.string().trim().max(1000).optional(),
-    first_frame_image: referenceSchema.optional(),
+    first_frame_image: imageUrlSchema.optional(),
     reference_images: referenceImagesSchema.optional(),
     reference_video: referenceSchema.optional(),
     async: z.boolean().default(true),

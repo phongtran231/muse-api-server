@@ -3,13 +3,12 @@
 /**
  * Reference media resolution.
  *
- * Endpoints accept reference media as a single string in one of three forms:
- *   1. A previously uploaded file ID   -> "file_abc123"
- *   2. A public HTTP(S) URL            -> "https://cdn.example.com/cat.png"
- *   3. A base64 data URI               -> "data:image/png;base64,iVBORw0..."
+ * Image reference fields are forwarded as HTTP(S) URLs and are not resolved
+ * here. Video references and generic file uploads can still resolve file IDs,
+ * remote URLs, and base64 data URIs.
  *
- * Every form is normalized into a stored File (sniffed, size-checked, owned by
- * the caller), so queued jobs never carry large payloads in the database.
+ * Resolved media is normalized into a stored File (sniffed, size-checked,
+ * owned by the caller), so queued video jobs do not carry large payloads.
  */
 
 const axios = require('axios');
@@ -126,6 +125,15 @@ async function resolveReference(value, { expectedKind, apiKeyId, param }) {
   }
   const input = value.trim();
 
+  // Image reference URLs are sent directly to Muse. Never fetch, store, or
+  // convert them in this resolver; it remains for video and file uploads.
+  if (expectedKind === 'image') {
+    throw new ApiError(ErrorCodes.REFERENCE_INVALID, {
+      message: `Image reference '${param}' must be forwarded as an HTTP(S) URL.`,
+      param
+    });
+  }
+
   if (/^file_[A-Za-z0-9_-]+$/.test(input)) {
     const doc = await storage.getFileOrThrow(input, { apiKeyId, param });
     if (expectedKind && doc.kind !== expectedKind) {
@@ -151,58 +159,17 @@ async function resolveReference(value, { expectedKind, apiKeyId, param }) {
   throw new ApiError(ErrorCodes.REFERENCE_INVALID, { param });
 }
 
-// The upstream drops the WebSocket (write EPIPE) when a message carries large
-// images: requests with ~2-4 MB PNG references always failed, ~100-300 KB JPEGs
-// always worked. Reference images are therefore shrunk before sending (the
-// stored original is untouched), like the muse.ai web client does on upload.
-const UPSTREAM_IMAGE_TOTAL_BYTES = 2 * 1024 * 1024;
-const UPSTREAM_IMAGE_MAX_BYTES = 400 * 1024;
-const UPSTREAM_IMAGE_STEPS = [
-  { size: 1536, quality: 85 },
-  { size: 1280, quality: 80 },
-  { size: 1024, quality: 75 },
-  { size: 768, quality: 70 }
-];
-
-/** Per-image byte budget when `count` images go into one upstream message. */
-function upstreamImageBudget(count = 1) {
-  return Math.min(UPSTREAM_IMAGE_MAX_BYTES, Math.floor(UPSTREAM_IMAGE_TOTAL_BYTES / Math.max(1, count)));
-}
-
-/** Re-encodes an image as JPEG until it fits `maxBytes`; returns the original when it already fits. */
-async function shrinkImage(buffer, mimeType, maxBytes) {
-  const sharp = require('sharp');
-  let meta = null;
-  try {
-    meta = await sharp(buffer).metadata();
-  } catch (err) {
-    return { buffer, mimeType }; // not decodable here; send as-is
-  }
-  const longest = Math.max(meta.width || 0, meta.height || 0);
-  if (buffer.length <= maxBytes && longest <= UPSTREAM_IMAGE_STEPS[0].size) return { buffer, mimeType };
-
-  let out = buffer;
-  for (const step of UPSTREAM_IMAGE_STEPS) {
-    out = await sharp(buffer, { animated: false })
-      .rotate()
-      .resize({ width: step.size, height: step.size, fit: 'inside', withoutEnlargement: true })
-      .flatten({ background: '#ffffff' })
-      .jpeg({ quality: step.quality, mozjpeg: true })
-      .toBuffer();
-    if (out.length <= maxBytes) break;
-  }
-  return { buffer: out, mimeType: 'image/jpeg' };
-}
-
 /**
  * Converts a stored File into the payload shape expected by the upstream client.
+ * Used for video references; image references are forwarded as URLs.
  * @param {object} fileDoc
- * @param {{ maxImageBytes?: number }} [options]  Byte budget for an image (see upstreamImageBudget).
  */
-async function toUpstreamPayload(fileDoc, { maxImageBytes = UPSTREAM_IMAGE_MAX_BYTES } = {}) {
+async function toUpstreamPayload(fileDoc) {
+  if (fileDoc.kind === 'image') {
+    throw new ApiError(ErrorCodes.REFERENCE_INVALID, { message: 'Image references must be forwarded as HTTP(S) URLs.' });
+  }
   let buffer = await storage.readFileBuffer(fileDoc);
   let mimeType = fileDoc.mime_type;
-  if (fileDoc.kind === 'image') ({ buffer, mimeType } = await shrinkImage(buffer, mimeType, maxImageBytes));
   return {
     mime_type: mimeType,
     data_base64: buffer.toString('base64'),
@@ -210,4 +177,4 @@ async function toUpstreamPayload(fileDoc, { maxImageBytes = UPSTREAM_IMAGE_MAX_B
   };
 }
 
-module.exports = { ingestBuffer, resolveReference, toUpstreamPayload, upstreamImageBudget, shrinkImage, maxBytesFor };
+module.exports = { ingestBuffer, resolveReference, toUpstreamPayload, maxBytesFor };

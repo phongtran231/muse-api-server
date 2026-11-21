@@ -157,9 +157,7 @@ async function composeCredentialAsync(params = {}, existing = '') {
 
   try {
     const { fetchWssFromCookie } = require('./client');
-    const res = await fetchWssFromCookie(comp.value, params.proxy || null, {
-      preferBrowser: params.preferBrowser || params.useBrowser || false
-    });
+    const res = await fetchWssFromCookie(comp.value, params.proxy || null);
     if (res && res.wsUrl) {
       return {
         value: res.hybrid,
@@ -197,7 +195,7 @@ function resolveProxy(value) {
 }
 
 /**
- * Normalizes a proxy value to a URL usable by https-proxy-agent and Chromium.
+ * Normalizes a proxy value to a URL usable by https-proxy-agent.
  * Accepts full URLs (http://, https://, socks5://) and the common provider
  * formats "host:port:user:pass", "user:pass@host:port" and "host:port"
  * (all treated as HTTP proxies). Returns null for empty input.

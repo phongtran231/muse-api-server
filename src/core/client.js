@@ -223,6 +223,8 @@ class MuseClient extends EventEmitter {
     this.wsUrl = options.wsUrl || null;
     this.cookies = options.cookies || DEFAULT_COOKIES;
     this.proxy = resolveProxy(options.proxy || process.env.MUSE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null);
+    // Bootstrap resumes a suspended VM with POST /api/hatch/vm/wake (what muse.ai does on page load).
+    this.wake = Boolean(options.wake);
     this.ws = null;
     this.sendCipher = null;
     this.recvCipher = null;
@@ -374,11 +376,14 @@ class MuseClient extends EventEmitter {
           const endpointUrl = sessionData.endpoint_url || (sessionData.vms && sessionData.vms[0] && sessionData.vms[0].endpoint_url) || (vmId ? `wss://${vmId}.metaaivm.com/` : null);
 
           // Meta suspends idle VMs. A token for a suspended VM is still issued, but the
-          // WSS handshake then fails with HTTP 502, so stop here and let the caller
-          // wake the VM (fetchWssFromCookie falls back to Chromium, which resumes it).
+          // WSS handshake then fails with HTTP 502. With `wake` ask Meta to resume it
+          // (vm_state is not reliable: it reads UNKNOWN even for a running VM, so wake
+          // unconditionally); otherwise stop and let the caller decide.
           const vmState = String(sessionData.vm_state || (sessionData.vms && sessionData.vms[0] && sessionData.vms[0].vm_state) || '').toUpperCase();
-          if (SLEEPING_VM_STATES.has(vmState)) {
-            const err = new Error(`The upstream VM is ${vmState}. Open muse.ai with this account (or let the server use Chromium) to resume it.`);
+          if (this.wake && vmId) {
+            await requestVmWake(vmId, restConfig);
+          } else if (SLEEPING_VM_STATES.has(vmState)) {
+            const err = new Error(`The upstream VM is ${vmState}. It will be woken over HTTP when a job needs this account.`);
             err.code = 'MUSE_VM_SUSPENDED';
             throw err;
           }
@@ -506,31 +511,9 @@ class MuseClient extends EventEmitter {
     const init = parseGatewayInit(raw);
 
     if (!init || typeof init !== 'object' || raw === 'null' || !init.authToken) {
-      // Strategy 3C: Fallback to Chromium browser automation
-      try {
-        console.log('[Bootstrap] Fallback: Launching headless Chromium to extract active WebSocket URL from cookie...');
-        const { extractWssViaChromium, detectChromium } = require('./browser');
-        if (detectChromium()) {
-          const browserRes = await extractWssViaChromium(cleanCookies, { proxy: proxyUrl, timeoutMs: 35000 });
-          if (browserRes && browserRes.wsUrl) {
-            this.wsUrl = browserRes.wsUrl;
-            if (browserRes.refreshedCookies) {
-              this.refreshedCookies = browserRes.refreshedCookies;
-              this.cookies = browserRes.refreshedCookies;
-            }
-            console.log(`[Bootstrap] Successfully extracted active WebSocket URL via Chromium for VM: ${browserRes.vmId}`);
-            return this.wsUrl;
-          }
-        }
-      } catch (browserErr) {
-        console.warn('[Bootstrap] Chromium extraction attempt failed:', browserErr.message);
-      }
-
       throw new Error(
-        'The cookie was rejected or this server IP is blocked by upstream (VM info returned null).\n' +
-        '>> QUICK FIX:\n' +
-        '1. Sign in from a desktop browser, open DevTools > Network, find the WebSocket request "noise?vm_id=..." and register that wss:// URL (wss:// URLs are not IP-restricted).\n' +
-        '2. Or, to let the server renew wss:// URLs from the cookie automatically, set MUSE_PROXY=http://... (residential proxy) in .env, or install Chromium on the host.'
+        'Could not derive a WebSocket URL from the session cookie using the HTTP APIs. ' +
+        'Check that the cookie is valid and the server can reach muse.ai, or provide a fresh wss:// URL.'
       );
     }
 
@@ -1650,17 +1633,11 @@ class MuseClient extends EventEmitter {
 
       // 1. Process Reference Images in order (item n = [Reference Image n] in the prompt)
       for (const ref of collectRefImages(options)) {
-        const b64 = typeof ref === 'string'
-          ? (ref.includes(';base64,') ? ref.split(';base64,')[1] : ref)
-          : (ref.data_base64 || (Buffer.isBuffer(ref.buffer) ? ref.buffer.toString('base64') : ''));
-        const mime = (typeof ref === 'object' && (ref.mime_type || ref.mime)) || 'image/jpeg';
-        if (b64) {
-          items.push({
-            type: 'image',
-            mime_type: mime,
-            data_base64: b64
-          });
+        const url = typeof ref === 'string' ? ref : ref?.url;
+        if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+          throw new Error('Image references must be HTTP(S) URLs.');
         }
+        items.push({ type: 'image', url });
       }
 
       // 2. Process Reference Video / File if provided
@@ -1684,7 +1661,13 @@ class MuseClient extends EventEmitter {
       // 3. Merge custom items if provided
       if (Array.isArray(options.items)) {
         for (const it of options.items) {
-          if (!items.some(ex => ex.data_base64 && ex.data_base64 === it.data_base64)) {
+          if (it.type === 'image' && (typeof it.url !== 'string' || !/^https?:\/\//i.test(it.url))) {
+            throw new Error('Image attachments must use HTTP(S) URLs.');
+          }
+          const duplicate = it.type === 'image' && it.url
+            ? items.some((ex) => ex.type === 'image' && ex.url === it.url)
+            : items.some((ex) => ex.data_base64 && ex.data_base64 === it.data_base64);
+          if (!duplicate) {
             items.push(it);
           }
         }
@@ -1982,7 +1965,27 @@ class MuseClient extends EventEmitter {
 }
 
 /**
- * Automatically fetch a fresh WebSocket URL from muse.ai using only a cookie string.
+ * Asks Meta to resume a VM, as the muse.ai web app does on load and on every
+ * reconnect. Returns once the request is accepted ({"status":"wake_requested"});
+ * the VM becomes reachable a few seconds later.
+ */
+async function requestVmWake(vmId, restConfig, retryCount = 0) {
+  const res = await axios.post('https://muse.ai/api/hatch/vm/wake', {
+    vm_id: vmId,
+    retry_count: retryCount,
+    connect_attempt_id: crypto.randomUUID(),
+    wake_trigger: retryCount > 0 ? 'reconnect' : 'mount'
+  }, { ...restConfig, timeout: 10000 });
+  if (res.status < 200 || res.status >= 300) {
+    const err = new Error(`VM wake request failed with HTTP ${res.status}`);
+    err.code = res.status === 401 ? 'MUSE_AUTH_EXPIRED' : 'MUSE_VM_WAKE_FAILED';
+    throw err;
+  }
+  console.log(`[Bootstrap] VM wake requested for ${vmId} (${res.data?.status || res.status})`);
+}
+
+/**
+ * Fetch a fresh WebSocket URL from muse.ai over HTTP using a cookie string.
  * Returns { success, wsUrl, expiry, vmId, refreshedCookies, hybrid }
  */
 async function fetchWssFromCookie(cookieString, proxy = null, options = {}) {
@@ -1995,67 +1998,25 @@ async function fetchWssFromCookie(cookieString, proxy = null, options = {}) {
   }
   proxy = resolveProxy(proxy);
 
-  const { extractWssViaChromium, detectChromium } = require('./browser');
-  const hasChromium = Boolean(detectChromium());
-
-  // 1. If explicit browser preference requested AND Chromium is available, attempt Chromium first
-  if ((options.preferBrowser || options.useBrowser) && hasChromium && !options.noBrowser) {
-    try {
-      console.log('[Bootstrap] Preferred browser extraction: launching Chromium...');
-      return await extractWssViaChromium(clean, { proxy, ...options });
-    } catch (browserErr) {
-      console.warn(`[Bootstrap] Preferred browser extraction failed (${browserErr.message}). Falling back to HTTP probe...`);
-    }
-  }
-
-  // 2. Try fast HTTP probe
-  let httpErr = null;
+  // HTTP is the only extraction path. VM wake requests use this same HTTP flow.
+  const probe = new MuseClient({ cookies: clean, proxy, wake: options.wake });
+  probe.forceRefresh = true;
+  const wsUrl = await probe.bootstrap();
+  const expiry = getWssExpiry(wsUrl);
+  let vmId = null;
   try {
-    const probe = new MuseClient({ cookies: clean, proxy });
-    probe.forceRefresh = true;
-    const wsUrl = await probe.bootstrap();
-    const expiry = getWssExpiry(wsUrl);
-    let vmId = null;
-    try {
-      vmId = new URL(wsUrl).searchParams.get('vm_id');
-    } catch (e) {}
-    const refreshedCookies = probe.refreshedCookies || clean;
-    return {
-      success: true,
-      wsUrl,
-      expiry,
-      vmId,
-      refreshedCookies,
-      hybrid: buildHybrid(wsUrl, refreshedCookies),
-      extractedVia: 'http'
-    };
-  } catch (err) {
-    httpErr = err;
-    if (err.code === 'MUSE_AUTH_EXPIRED') {
-      throw err;
-    }
+    vmId = new URL(wsUrl).searchParams.get('vm_id');
+  } catch (e) {}
+  const refreshedCookies = probe.refreshedCookies || clean;
+  return {
+    success: true,
+    wsUrl,
+    expiry,
+    vmId,
+    refreshedCookies,
+    hybrid: buildHybrid(wsUrl, refreshedCookies),
+    extractedVia: options.wake ? 'http-wake' : 'http'
   }
-
-  // 3. Fallback to Chromium browser automation if HTTP failed (and wasn't already tried above)
-  // options.noBrowser: background renewals must not open muse.ai in a browser
-  // (that wakes a suspended VM, see pool `wake`).
-  if (hasChromium && !(options.preferBrowser || options.useBrowser) && !options.noBrowser) {
-    try {
-      console.log('[Bootstrap] HTTP probe failed. Falling back to Chromium browser automation...');
-      return await extractWssViaChromium(clean, { proxy, ...options });
-    } catch (browserErr) {
-      throw new Error(`Failed to extract WebSocket URL from cookie via HTTP (${httpErr?.message || 'failed'}) and Chromium browser (${browserErr.message}).`);
-    }
-  }
-
-  // 4. If browser was explicitly requested but Chromium is not detected and HTTP also failed
-  if ((options.preferBrowser || options.useBrowser) && !hasChromium) {
-    throw new Error(
-      `Chromium browser was requested but is not installed on this system, and HTTP extraction failed: ${httpErr?.message || 'Upstream session error'}`
-    );
-  }
-
-  throw httpErr;
 }
 
 module.exports = {

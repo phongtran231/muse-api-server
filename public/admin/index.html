@@ -433,32 +433,19 @@
                 </div>
               </div>
 
-              <!-- Reference Image Dropzone -->
+              <!-- Reference Image URL -->
               <div class="form-group">
                 <div class="form-label">
                   <span>Reference Image (Image-to-Image)</span>
                   <span style="font-size: 11px; color: var(--text-dim); font-weight: 400;">Optional</span>
                 </div>
-                <div id="imageDropzone" class="studio-dropzone" onclick="document.getElementById('imageFileInput').click()">
-                  <input type="file" id="imageFileInput" accept="image/*" style="display: none;" onchange="handleStudioFileUpload(this.files[0], 'image')">
-                  <div id="imageDropzoneContent" class="dropzone-inline">
-                    <div class="dropzone-icon-box">
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                    </div>
-                    <div>
-                      <div style="font-size: 12.5px; font-weight: 500; color: var(--text-main);">Drop reference image or click to browse</div>
-                      <div style="font-size: 11px; color: var(--text-dim);">PNG, JPG, WebP up to 20MB</div>
-                    </div>
-                  </div>
-                  <div id="imageFilePreviewContainer" style="display: none; align-items: center; justify-content: center; gap: 12px;">
-                    <img id="imageFileThumb" src="" alt="preview" style="max-height: 42px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">
-                    <div style="text-align: left;">
-                      <div id="imageFileName" style="font-size: 12px; font-weight: 500; color: var(--text-main);"></div>
-                      <span class="badge badge-online" style="font-size: 9px; padding: 1px 5px;">Attached</span>
-                    </div>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); clearStudioFile('image')">&times; Remove</button>
-                  </div>
+                <input id="studioImageReferenceUrl" class="form-input" type="url" maxlength="2048" placeholder="https://example.com/reference.jpg" oninput="previewStudioImageUrl(this.value)">
+                <div id="imageFilePreviewContainer" style="display: none; align-items: center; justify-content: center; gap: 12px; margin-top: 10px;">
+                  <img id="imageFileThumb" src="" alt="Reference image preview" style="max-height: 42px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);">
+                  <span class="badge badge-online" style="font-size: 9px; padding: 1px 5px;">URL reference</span>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="clearStudioFile('image')">&times; Remove</button>
                 </div>
+                <div style="font-size: 11px; color: var(--text-dim); margin-top: 6px;">Use a publicly reachable HTTP(S) image URL. The URL is sent directly to Muse.</div>
               </div>
 
               <!-- Action Button -->
@@ -631,7 +618,7 @@
                   <span style="font-size: 11px; color: var(--text-dim); font-weight: 400;">Optional</span>
                 </div>
                 <div id="videoDropzone" class="studio-dropzone" onclick="document.getElementById('videoFileInput').click()">
-                  <input type="file" id="videoFileInput" accept="image/*,video/*" style="display: none;" onchange="handleStudioFileUpload(this.files[0], 'video')">
+                  <input type="file" id="videoFileInput" accept="video/*" style="display: none;" onchange="handleStudioFileUpload(this.files[0])">
                   <div id="videoDropzoneContent" class="dropzone-inline">
                     <div class="dropzone-icon-box">
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
@@ -1171,11 +1158,7 @@
         </div>
 
         <div style="background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 14px; display: flex; flex-direction: column; gap: 10px;">
-          <div style="font-size: 12px; font-weight: 700; color: var(--text-main);">Extraction & Validation Options</div>
-          <label class="form-checkbox-label">
-            <input type="checkbox" id="acctUseBrowser" class="form-checkbox">
-            <span>Use Chromium Browser Automation (only needed if REST probe gets bot challenged)</span>
-          </label>
+          <div style="font-size: 12px; font-weight: 700; color: var(--text-main);">Validation Options</div>
           <label class="form-checkbox-label">
             <input type="checkbox" id="acctValidate" class="form-checkbox" checked>
             <span>Live Connection Test (verify handshake before saving)</span>
@@ -1264,10 +1247,6 @@
             <label class="form-checkbox-label">
               <input type="checkbox" id="bulkValidate" class="form-checkbox" checked>
               <span>Live connection test (drop accounts that fail)</span>
-            </label>
-            <label class="form-checkbox-label">
-              <input type="checkbox" id="bulkUseBrowser" class="form-checkbox">
-              <span>Use Chromium for extraction</span>
             </label>
           </div>
         </div>

@@ -139,7 +139,7 @@ test('image and video generation preserve references, options and session-owned 
   for (const kind of ['image', 'video']) {
     const c = client();
     const controller = new AbortController();
-    const reference = { data_base64: 'abc', mime_type: 'image/png' };
+    const reference = { url: 'https://cdn.example.com/reference.png' };
     c.chat = async (prompt, options) => {
       assert.equal(options.waitForKind, kind);
       assert.deepEqual([...options.ref_images], [reference]);
@@ -169,7 +169,7 @@ test('video generation turns image-to-video controls into upstream instructions'
   c.readFile = async () => Buffer.from('x');
   c.deleteSession = async () => ({ ok: true });
   await c.generateVideo('Same woman, keep face unchanged', {
-    ref_images: [{ data_base64: 'face', mime_type: 'image/png' }],
+    ref_images: [{ url: 'https://cdn.example.com/face.png' }],
     reference_image_hints: [
       { type: 'image', role: 'first_frame', image_index: 1 },
       { type: 'face', weight: 1, lock: true, image_index: 1 }
@@ -192,10 +192,56 @@ test('video generation turns image-to-video controls into upstream instructions'
   assert.match(sentPrompt, /8s/);
 });
 
+test('image reference fields accept only HTTP(S) URLs, not file IDs or data URIs', () => {
+  const { imageUrlSchema, referenceImagesSchema } = require('../src/routes/helpers');
+  const { chatRequestSchema } = require('../src/routes/chat');
+  const { videoRequestSchema } = require('../src/routes/videos');
+  const url = 'https://cdn.example.com/reference.jpg';
+  for (const value of [url, 'http://cdn.example.com/reference.jpg']) {
+    assert.equal(imageUrlSchema.safeParse(value).success, true);
+    assert.equal(referenceImagesSchema.safeParse([{ image: value }]).success, true);
+    assert.equal(chatRequestSchema.safeParse({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: value } }] }] }).success, true);
+  }
+  for (const value of ['file_image', 'data:image/png;base64,aGVsbG8=', 'ftp://cdn.example.com/reference.jpg', 'https://user:pass@cdn.example.com/image.jpg']) {
+    assert.equal(imageUrlSchema.safeParse(value).success, false, value);
+    assert.equal(referenceImagesSchema.safeParse([{ image: value }]).success, false, value);
+    assert.equal(chatRequestSchema.safeParse({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: value } }] }] }).success, false, value);
+    assert.equal(videoRequestSchema.safeParse({ prompt: 'Animate this', first_frame_image: value }).success, false, value);
+  }
+  assert.equal(videoRequestSchema.safeParse({ prompt: 'Summarize this clip', reference_video: 'file_video' }).success, true);
+});
+
+test('generation jobs persist image URLs directly and skip media resolution', async () => {
+  const imageUrl = 'https://cdn.example.com/reference.png?signature=unchanged';
+  let created;
+  const { submitGeneration } = isolated('src/routes/generation.js', {
+    '../config': config,
+    '../services/dispatcher': { dispatcher: {
+      findIdempotentJob: async () => null,
+      assertCanEnqueue: async () => {},
+      createJob: async (spec) => { created = spec; return { job: { _id: 'job_test', type: 'image', status: 'queued' } }; }
+    } },
+    '../services/media': { resolveReference: async () => { throw new Error('Image URLs must bypass media resolution.'); } },
+    '../services/webhook': {},
+    '../serializers': { serializeJob: value => value },
+    './helpers': { readIdempotencyKey: () => null, requestFingerprint: () => null }
+  });
+  const response = { setHeader() {}, status() { return this; }, json() { return this; } };
+  await submitGeneration({
+    valid: { body: { prompt: 'Use this image' } },
+    auth: { apiKey: { _id: 'key_test' } },
+    get() { return undefined; }
+  }, response, {
+    type: 'image', sync: false, params: {}, references: { images: [imageUrl] }
+  });
+  assert.deepEqual(Array.from(created.reference.image_urls), [imageUrl]);
+  assert.deepEqual(Array.from(created.reference.image_file_ids), []);
+});
+
 test('video reference deduplication preserves first-frame and face roles on the same image', () => {
   const Dispatcher = dispatcher();
   const d = new Dispatcher();
-  const image = { data_base64: 'same-image', mime_type: 'image/png' };
+  const image = { url: 'https://cdn.example.com/same-image.png' };
   const hints = [{ role: 'first_frame', type: 'image' }, { type: 'face', weight: 1, lock: true }];
   const result = d._dedupeReferences({
     _id: 'job', prompt: 'Keep [Reference Image 2] unchanged', params: { reference_image_hints: hints }
@@ -210,11 +256,43 @@ test('video reference deduplication preserves first-frame and face roles on the 
   assert.equal(result.referenceImageHints[1].weight, 1);
 });
 
+test('dispatcher forwards queued image URLs without loading or encoding their bytes', async () => {
+  let fileLookups = 0;
+  let mediaConversions = 0;
+  const Dispatcher = dispatcher({
+    './storage': { getFileOrThrow: async () => { fileLookups += 1; throw new Error('Should not load images.'); } },
+    './media': { toUpstreamPayload: async () => { mediaConversions += 1; throw new Error('Should not encode images.'); } }
+  });
+  const d = new Dispatcher();
+  const urls = ['https://cdn.example.com/one.png?sig=a', 'https://cdn.example.com/two.png?sig=b'];
+  const refs = await d._loadReferences({ api_key_id: 'key', reference: { image_urls: urls } });
+  assert.deepEqual(refs.images.map(ref => ({ ...ref })), urls.map(url => ({ url })));
+  assert.equal(refs.video, null);
+  assert.equal(fileLookups, 0);
+  assert.equal(mediaConversions, 0);
+});
+
+test('legacy queued image file IDs become signed URLs without reading image data', async () => {
+  let reads = 0;
+  const Dispatcher = dispatcher({
+    './storage': {
+      getFileOrThrow: async () => ({ kind: 'image' }),
+      createSignedUrl: () => ({ url: 'https://muse-api.test/signed-image?sig=abc' }),
+      readFileBuffer: async () => { reads += 1; throw new Error('Must not read image bytes.'); }
+    },
+    './media': { toUpstreamPayload: async () => { reads += 1; throw new Error('Must not encode image bytes.'); } }
+  });
+  const d = new Dispatcher();
+  const refs = await d._loadReferences({ api_key_id: 'key', reference: { image_file_ids: ['file_legacy'] } });
+  assert.deepEqual(Array.from(refs.images, ref => ({ url: ref.url })), [{ url: 'https://muse-api.test/signed-image?sig=abc' }]);
+  assert.equal(reads, 0);
+});
+
 test('image and video generation preserve product controls and reference order', async () => {
   for (const kind of ['image', 'video']) {
     const { MuseClient } = isolated('src/core/client.js', { axios: {}, ws: {} });
     const c = new MuseClient({ cookies: 'test' });
-    const images = ['face', 'product'].map(data_base64 => ({ data_base64, mime_type: 'image/jpeg' }));
+    const images = ['face', 'product'].map(name => ({ url: `https://cdn.example.com/${name}.jpg` }));
     let seen;
     c.chat = async (prompt, options) => {
       seen = { prompt, options };
@@ -239,7 +317,7 @@ test('image and video generation preserve product controls and reference order',
 
 test('deduplicated references retain product roles and weights', () => {
   const d = new (dispatcher())();
-  const images = ['same', 'same', 'product'].map(data_base64 => ({ data_base64 }));
+  const images = ['same.png', 'same.png', 'product.png'].map(name => ({ url: `https://cdn.example.com/${name}` }));
   const result = d._dedupeReferences({
     prompt: 'Use [Reference Image 3]', params: { reference_image_hints: [
       { type: 'image', role: 'first_frame' },
@@ -288,30 +366,30 @@ for (const kind of ['image', 'video']) {
     assert.equal(submitted.params.reference_image_hints[1].type, 'product');
     assert.equal(submitted.params.reference_image_hints[1].weight, 0);
     assert.equal(submitted.params.reference_image_hints[1].lock, false);
-    assert.equal(schema.parse({ prompt: 'x', reference_images: [{ image: 'file_image' }] }).reference_images[0].type, 'image');
+    assert.equal(schema.parse({ prompt: 'x', reference_images: [{ image: 'https://cdn.example.com/default.jpg' }] }).reference_images[0].type, 'image');
     for (const invalid of [
       { refs: ['https://cdn.example.com/old.jpg'] },
       { reference_image: 'https://cdn.example.com/old.jpg' },
       { reference_images: [] },
       { reference_images: ['https://cdn.example.com/string.jpg'] },
-      { reference_images: [{ image: 'file_image', type: 'unknown' }] },
-      { reference_images: [{ image: 'file_image', weight: 1.1 }] },
-      { reference_images: Array.from({ length: 11 }, () => ({ image: 'file_image' })) }
+      { reference_images: [{ image: 'https://cdn.example.com/image.jpg', type: 'unknown' }] },
+      { reference_images: [{ image: 'https://cdn.example.com/image.jpg', weight: 1.1 }] },
+      { reference_images: Array.from({ length: 11 }, () => ({ image: 'https://cdn.example.com/image.jpg' })) }
     ]) assert.equal(schema.safeParse({ prompt: 'x', ...invalid }).success, false);
     if (kind === 'video') {
       assert.equal(schema.safeParse({ prompt: 'x', mode: 'image_to_video' }).success, false);
       assert.equal(schema.safeParse({ prompt: 'x', reference_images: references, reference_video: 'file_video' }).success, false);
-      assert.equal(schema.safeParse({ prompt: 'x', first_frame_image: 'file_image', reference_images: Array.from({ length: 10 }, () => ({ image: 'file_image' })) }).success, false);
-      const withFrame = schema.parse({ prompt: 'x', first_frame_image: 'file_frame', reference_images: references });
+      assert.equal(schema.safeParse({ prompt: 'x', first_frame_image: 'https://cdn.example.com/frame.jpg', reference_images: Array.from({ length: 10 }, () => ({ image: 'https://cdn.example.com/image.jpg' })) }).success, false);
+      const withFrame = schema.parse({ prompt: 'x', first_frame_image: 'https://cdn.example.com/frame.jpg', reference_images: references });
       await handler({ valid: { body: withFrame } }, {});
-      assert.equal(submitted.references.images[0], 'file_frame');
+      assert.equal(submitted.references.images[0], 'https://cdn.example.com/frame.jpg');
       assert.equal(submitted.params.reference_image_hints[2].type, 'product');
     }
   });
 }
 
 test('reference images are sent upstream in order and numbered in the prompt', async () => {
-  const [a, b, c3] = ['aaa', 'bbb', 'ccc'].map((data_base64) => ({ data_base64, mime_type: 'image/png' }));
+  const [a, b, c3] = ['aaa', 'bbb', 'ccc'].map((name) => ({ url: `https://cdn.example.com/${name}.png` }));
   for (const kind of ['image', 'video']) {
     const c = client();
     let seen = null;
@@ -332,7 +410,8 @@ test('reference images are sent upstream in order and numbered in the prompt', a
   let payload = null;
   c.sendRequest = async (method, route, body) => { payload = body; throw new Error('stop'); };
   await assert.rejects(c.chat('hello', { ref_images: [a, b, c3], timeout: 1000 }), /stop/);
-  assert.deepEqual([...payload.items.map((it) => it.type === 'image' ? it.data_base64 : it.type)], ['aaa', 'bbb', 'ccc', 'text']);
+  assert.deepEqual([...payload.items.map((it) => it.type === 'image' ? it.url : it.type)], [a.url, b.url, c3.url, 'text']);
+  assert.ok(payload.items.filter(it => it.type === 'image').every(it => !Object.hasOwn(it, 'data_base64')));
 });
 
 test('bootstrap refuses a suspended VM instead of issuing a WSS URL that fails with 502', async () => {
@@ -346,6 +425,27 @@ test('bootstrap refuses a suspended VM instead of issuing a WSS URL that fails w
   c.forceRefresh = true;
   await assert.rejects(c.bootstrap(), (err) => err.code === 'MUSE_VM_SUSPENDED');
   assert.equal(tokenRequests, 0);
+});
+
+test('bootstrap with wake resumes a suspended VM over HTTP before requesting a token', async () => {
+  const posts = [];
+  const axios = {
+    get: async () => ({ status: 200, headers: {}, data: { status: 'assigned', vm_id: A, endpoint_url: `wss://${A}.metaaivm.com/`, vm_state: 'SUSPENDED' } }),
+    post: async (url, body) => {
+      posts.push({ url, body });
+      return url.endsWith('/api/hatch/vm/wake')
+        ? { status: 200, headers: {}, data: { status: 'wake_requested' } }
+        : { status: 200, headers: {}, data: { token: 't' } };
+    }
+  };
+  const { MuseClient } = isolated('src/core/client.js', { axios });
+  const c = new MuseClient({ cookies: 'hatch_sess=x', wake: true });
+  c.forceRefresh = true;
+  const url = await c.bootstrap();
+  assert.deepEqual(posts.map((p) => p.url), ['https://muse.ai/api/hatch/vm/wake', 'https://muse.ai/api/hatch/token']);
+  assert.equal(posts[0].body.vm_id, A);
+  assert.equal(posts[0].body.retry_count, 0);
+  assert.match(url, /auth_token=t/);
 });
 
 test('downloads reject overflow, allow exact EOF, and clean sessions on download failure', async () => {
@@ -646,6 +746,21 @@ test('live queue capacity setting is used by admission control without billing/q
   await d.assertCanEnqueue('image', { _id: 'key' });
 });
 
+test('image reference resolver never downloads or decodes image URLs', async () => {
+  let mediaRequests = 0;
+  const media = isolated('src/services/media.js', {
+    axios: { get: async () => { mediaRequests += 1; throw new Error('Image URL should not be fetched.'); } },
+    './storage': { getFileOrThrow: async () => { mediaRequests += 1; } }
+  });
+  for (const value of ['file_image', 'data:image/png;base64,aGVsbG8=', 'https://cdn.example.com/image.png']) {
+    await assert.rejects(
+      media.resolveReference(value, { expectedKind: 'image', apiKeyId: 'key', param: 'reference_image' }),
+      err => err.code === 'reference_invalid' && /HTTP\(S\) URL/.test(err.message)
+    );
+  }
+  assert.equal(mediaRequests, 0);
+});
+
 test('redirect to a literal private IP is blocked before connecting', async () => {
   let redirected = false;
   const media = isolated('src/services/media.js', {
@@ -657,7 +772,7 @@ test('redirect to a literal private IP is blocked before connecting', async () =
     } },
     './storage': {}, '../utils/net': require('../src/utils/net')
   });
-  await assert.rejects(media.resolveReference('https://public.example/image.png', { expectedKind: 'image', apiKeyId: 'key', param: 'reference_image' }), /reference_url_forbidden/);
+  await assert.rejects(media.resolveReference('https://public.example/video.mp4', { expectedKind: 'video', apiKeyId: 'key', param: 'reference_video' }), /reference_url_forbidden/);
   assert.equal(redirected, true);
 });
 
@@ -676,7 +791,7 @@ test('actual Axios redirect handling never requests the private redirect destina
     './storage': {}, '../utils/net': { ...require('../src/utils/net'), safeHttpAgent: agent }
   });
   try {
-    await assert.rejects(media.resolveReference(`http://localhost:${server.address().port}/start`, { expectedKind: 'image', apiKeyId: 'key', param: 'reference_image' }), err => {
+    await assert.rejects(media.resolveReference(`http://localhost:${server.address().port}/start`, { expectedKind: 'video', apiKeyId: 'key', param: 'reference_video' }), err => {
       assert.equal(err.code, 'reference_url_forbidden');
       return true;
     });
@@ -815,23 +930,19 @@ test('dropped upstream connections are classified as transport failures', () => 
   }
 });
 
-test('large reference images are shrunk under the upstream budget; small ones are untouched', async () => {
-  const sharp = require('sharp');
-  const { shrinkImage, upstreamImageBudget } = require('../src/services/media');
-  const big = await sharp(require('node:crypto').randomBytes(1600 * 1600 * 3), { raw: { width: 1600, height: 1600, channels: 3 } }).png().toBuffer();
-  assert.ok(big.length > 2 * 1024 * 1024);
-  const budget = upstreamImageBudget(6);
-  const out = await shrinkImage(big, 'image/png', budget);
-  assert.equal(out.mimeType, 'image/jpeg');
-  assert.ok(out.buffer.length <= budget, `${out.buffer.length} > ${budget}`);
-  const small = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#f00' } }).png().toBuffer();
-  const same = await shrinkImage(small, 'image/png', budget);
-  assert.equal(same.buffer, small);
-  assert.equal(same.mimeType, 'image/png');
-  assert.ok(upstreamImageBudget(10) * 10 <= 2 * 1024 * 1024);
+test('chat image attachments preserve URL and avoid media download', async () => {
+  const imageUrl = 'https://cdn.example.com/large-reference.png?token=keep-this';
+  const { resolveAttachments } = require('../src/services/chat');
+  const result = await resolveAttachments({ content: [
+    { type: 'text', text: 'Describe this.' },
+    { type: 'image_url', image_url: { url: imageUrl } }
+  ] }, 'key');
+  assert.deepEqual(result.items, [{ type: 'image', url: imageUrl }]);
+  assert.equal(result.imageCount, 1);
+  assert.equal(result.videoCount, 0);
 });
 
-test('background reconnects leave a sleeping VM alone; a job wakes it', async () => {
+test('background reconnects leave a sleeping VM alone; a job wakes it over HTTP', async () => {
   let awake = false;
   const renewCalls = [];
   class Client extends EventEmitter {
@@ -848,9 +959,9 @@ test('background reconnects leave a sleeping VM alone; a job wakes it', async ()
     '../core/client': {
       MuseClient: Client,
       fetchWssFromCookie: async (cookie, proxy, options) => {
-        renewCalls.push(Boolean(options.noBrowser));
-        if (options.noBrowser) { const e = new Error('The upstream VM is SUSPENDED.'); e.code = 'MUSE_VM_SUSPENDED'; throw e; }
-        awake = true; // Chromium path resumes the VM
+        renewCalls.push(Boolean(options.wake));
+        if (!options.wake) { const e = new Error('The upstream VM is SUSPENDED.'); e.code = 'MUSE_VM_SUSPENDED'; throw e; }
+        awake = true; // The HTTP wake request resumes the VM.
         return { hybrid: 'fresh', wsUrl: 'wss://test' };
       }
     },
@@ -862,7 +973,7 @@ test('background reconnects leave a sleeping VM alone; a job wakes it', async ()
   await assert.rejects(pool._ensureClient(entry));
   assert.equal(entry.sleeping, true);
   assert.equal(awake, false);
-  assert.deepEqual([...renewCalls], [true]);
+  assert.deepEqual([...renewCalls], [false]);
 
   await assert.rejects(pool._ensureClient(entry)); // no further upstream traffic while asleep
   assert.equal(renewCalls.length, 1);
@@ -870,7 +981,22 @@ test('background reconnects leave a sleeping VM alone; a job wakes it', async ()
   const client = await pool._ensureClient(entry, { wake: true });
   assert.equal(client.ws.readyState, 1);
   assert.equal(entry.sleeping, false);
-  assert.equal(renewCalls.at(-1), false);
+  assert.equal(renewCalls.at(-1), true);
+});
+
+test('cookie WSS renewal uses HTTP only and never loads browser automation', async () => {
+  let browserModuleLoaded = false;
+  const { MuseClient, fetchWssFromCookie } = isolated('src/core/client.js', {
+    './browser': { detectChromium() { browserModuleLoaded = true; throw new Error('Browser automation must not run'); } }
+  });
+  MuseClient.prototype.bootstrap = async function bootstrap() {
+    return 'wss://hatch.metaaivm.com/v1/noise?vm_id=test&auth_token=token';
+  };
+
+  const result = await fetchWssFromCookie('hatch_sess=test.session');
+  assert.equal(result.extractedVia, 'http');
+  assert.equal(result.vmId, 'test');
+  assert.equal(browserModuleLoaded, false);
 });
 
 test('bulk import parses cookies, spreads proxies by load and continues name numbering', () => {

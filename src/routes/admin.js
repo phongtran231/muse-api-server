@@ -74,8 +74,7 @@ const accountFields = {
   capabilities: capabilitiesSchema.optional(),
   concurrency: concurrencySchema.optional(),
   metadata: metadataSchema.optional(),
-  validate: z.boolean().default(true),
-  use_browser: z.boolean().optional().describe('Force headless Chromium browser to extract wss:// URL from cookie.')
+  validate: z.boolean().default(true)
 };
 
 const createAccountSchema = z
@@ -111,8 +110,7 @@ async function buildCredential(body, existing = '') {
       wss_url: body.wss_url,
       cookie: body.cookie,
       cookie_string: body.credential,
-      proxy: body.proxy || null,
-      preferBrowser: body.use_browser || false
+      proxy: body.proxy || null
     },
     existing
   );
@@ -266,10 +264,8 @@ router
   .route('/accounts/:id/refresh')
   .post(
     validate(idParamSchema, 'params'),
-    validate(z.object({ use_browser: z.boolean().optional() }).strict().optional(), 'body'),
     async (req, res) => {
-      const useBrowser = req.valid.body?.use_browser ?? (req.query.use_browser === 'true');
-      const result = await pool.refreshCredential(req.params.id, { preferBrowser: useBrowser });
+      const result = await pool.refreshCredential(req.params.id);
       res.json(presentAccount(await loadAccountWithCredential(req.params.id), { refresh: result }));
     }
   )

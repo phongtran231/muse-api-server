@@ -61,17 +61,14 @@ async function submitGeneration(req, res, { type, sync, params, references, onSu
 
   if (!job) {
     await dispatcher.assertCanEnqueue(type, apiKey);
-    const webhookUrl = body.webhook_url ? webhook.validateWebhookUrl(body.webhook_url) : null;
+    const webhookUrl = config.webhooks.enabled && body.webhook_url ? webhook.validateWebhookUrl(body.webhook_url) : null;
 
-    const reference = { image_file_id: null, image_file_ids: [], video_file_id: null };
+    const reference = { image_urls: [], image_file_id: null, image_file_ids: [], video_file_id: null };
     // Order matters: element n becomes [Reference Image n] in the upstream prompt.
     const images = references.images || [];
     for (let i = 0; i < images.length; i += 1) {
-      const param = references.imageParams?.[i] || `reference_images[${i}].image`;
-      const doc = await media.resolveReference(images[i], { expectedKind: 'image', apiKeyId: apiKey._id, param });
-      reference.image_file_ids.push(doc._id);
+      reference.image_urls.push(images[i]);
     }
-    reference.image_file_id = reference.image_file_ids[0] || null;
     if (references.video) {
       const doc = await media.resolveReference(references.video, { expectedKind: 'video', apiKeyId: apiKey._id, param: 'reference_video' });
       reference.video_file_id = doc._id;

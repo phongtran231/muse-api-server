@@ -2,14 +2,30 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const http = require('node:http');
-const fs = require('node:fs/promises');
+const fsPromises = require('node:fs/promises');
 const path = require('node:path');
-const { detectChromium } = require('../src/core/browser');
 
-test('Studio tabs display independently and accept multiple queued videos before completion', { timeout: 30000 }, async () => {
-  const executablePath = detectChromium();
-  assert.ok(executablePath, 'Install Chromium or configure CHROMIUM_PATH to run browser regression tests.');
+function findTestBrowser() {
+  const configured = process.env.CHROMIUM_PATH || process.env.CHROME_PATH;
+  if (configured && fs.existsSync(configured)) return configured;
+  const names = process.platform === 'win32' ? ['chrome.exe', 'msedge.exe'] : ['google-chrome', 'chromium', 'chromium-browser'];
+  for (const name of names) {
+    const result = spawnSync(process.platform === 'win32' ? 'where.exe' : 'which', [name], { encoding: 'utf8' });
+    const candidate = result.stdout?.split(/\r?\n/).find(Boolean);
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  const commonPaths = process.platform === 'darwin'
+    ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']
+    : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+  return commonPaths.find(fs.existsSync) || null;
+}
+
+const executablePath = findTestBrowser();
+
+test('Studio tabs display independently and accept multiple queued videos before completion', { timeout: 30000, skip: !executablePath }, async () => {
   const { default: puppeteer } = await import('puppeteer-core');
   const jobs = [];
   const chatRequests = [];
@@ -39,7 +55,7 @@ test('Studio tabs display independently and accept multiple queued videos before
       if (!files[url.pathname]) { res.writeHead(404); return res.end(); }
       const ext = path.extname(files[url.pathname]);
       res.setHeader('Content-Type', { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' }[ext]);
-      res.end(await fs.readFile(path.join(root, files[url.pathname])));
+      res.end(await fsPromises.readFile(path.join(root, files[url.pathname])));
     } catch (err) { res.writeHead(500); res.end(err.message); }
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));

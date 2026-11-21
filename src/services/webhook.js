@@ -156,8 +156,9 @@ async function drainWebhooks() {
       const job = await Job.findOneAndUpdate({
         status: { $in: ['succeeded', 'failed', 'canceled'] },
         'webhook.url': { $type: 'string', $ne: '' },
-        'webhook.delivered': { $ne: true },
-        'webhook.abandoned': { $ne: true },
+        // Equality (not $ne) so the query matches the partial `webhook_outbox` index.
+        'webhook.delivered': false,
+        'webhook.abandoned': false,
         'webhook.attempts': { $lt: Math.min(config.webhooks.maxAttempts, BACKOFF_MS.length) },
         $and: [
           { $or: [{ 'webhook.next_attempt_at': null }, { 'webhook.next_attempt_at': { $lte: now } }] },
@@ -178,7 +179,7 @@ function kickWebhooks() {
 }
 
 function startWebhooks() {
-  if (workerTimer) return;
+  if (workerTimer || !config.webhooks.enabled) return;
   stopping = false;
   workerTimer = setInterval(kickWebhooks, 2000);
   workerTimer.unref?.();
@@ -188,7 +189,7 @@ function startWebhooks() {
 async function dispatchJobEvent(jobDoc) {
   // Job.status + webhook.url is the durable outbox entry. No second write is
   // needed between committing a terminal state and recording its event.
-  if (jobDoc?.webhook?.url) kickWebhooks();
+  if (config.webhooks.enabled && jobDoc?.webhook?.url) kickWebhooks();
 }
 
 function stopWebhooks() {

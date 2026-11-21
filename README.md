@@ -41,7 +41,7 @@ Whether you want to build autonomous AI agents, Telegram/Discord bots, automated
 | **Concurrency Ceiling** | 1 - 2 requests (easily blocked) | **Up to 2,000 concurrent threads** per account / global cluster |
 | **Connection Method** | Cookie-based HTTP scraping (Fragile) | **Direct WebSocket + Noise Protocol** straight to Meta VM |
 | **Datacenter IP Ban** | ❌ 99% blocked on AWS/Hetzner/Vultr | ✅ **100% Bypassed** via direct WSS streaming |
-| **WSS Auto-Recovery** | ❌ Manual re-login when token dies | ✅ **Self-Healing Watchdog** (Auto-renews via Headless Chromium) |
+| **WSS Auto-Recovery** | ❌ Manual re-login when token dies | ✅ **Self-Healing Watchdog** (HTTP-only renewal) |
 | **Chat API** | Custom, non-standard JSON | ✅ **100% OpenAI-Compatible** (`/v1/chat/completions` + SSE) |
 | **Media Generation** | Blocking / High timeout rate | ✅ **Durable Queue Dispatcher** + Webhooks + Signed CDN links |
 | **Web GUI** | None or basic playground | ✅ **Full Web Studio** with Non-blocking Live Render Queue |
@@ -59,7 +59,7 @@ Whether you want to build autonomous AI agents, Telegram/Discord bots, automated
 
 ### 2. 🛡️ Self-Healing WSS Auto-Recovery Watchdog
 - **Active Health Monitoring**: Runs a background diagnostic loop every 45 seconds to inspect all connected account sockets.
-- **Automated Headless Browser Renewal**: If an account's WSS token expires or is dropped by Meta, the gateway automatically launches a lightweight headless Chromium process (auto-detected on Linux & Windows) to re-authenticate and derive a fresh WebSocket connection without human intervention.
+- **HTTP-only Renewal**: If an account's WSS token expires or is dropped by Meta, the gateway renews it through Muse's session and token APIs. It requests VM wake-up over HTTP when a job needs a sleeping account. If HTTP renewal fails, the account is reported as unavailable; the server does not launch a browser.
 - **One-Click Bulk Recovery**: REST endpoint `POST /api/accounts/recover-all` to heal all degraded accounts simultaneously.
 
 ### 3. 🎨 3-in-1 Generative AI Engine
@@ -277,15 +277,18 @@ For image-to-video, pass public image URLs directly:
 `mode` accepts `text_to_video`, `image_to_video`, or `video_to_video`; when omitted,
 it is inferred from the references. Image-to-video requires an image, and
 video-to-video requires `reference_video`. Images and video references cannot be
-combined; text-to-video accepts no reference media. Images may also use uploaded
-file IDs or data URIs in `reference_images[].image` or `first_frame_image`.
-Remote URLs must be enabled on the server and reachable without authentication.
+combined; text-to-video accepts no reference media. Image reference fields accept
+HTTP(S) URLs only; file IDs and data URIs are rejected. The server forwards image
+URLs to Muse unchanged, without downloading or base64-encoding them. Video references
+can still use uploaded file IDs or data URIs. Image URLs must be publicly reachable
+by Muse while a queued job is running. Remote video URLs must be enabled on the
+server and reachable without authentication.
 
 Both image and video generation use `reference_images`, an ordered array of objects.
 At most 10 image entries are accepted, counting the optional video `first_frame_image`.
 The first-frame image is attached first, followed by `reference_images` in array order.
 Use `[Reference Image n]` in the prompt to identify the n-th attached image.
-Identical images are sent upstream once while retaining all first-frame/face/product
+Repeated URLs are sent upstream once while retaining all first-frame/face/product
 instructions. `weight` is between 0 and 1; `lock` is an optional boolean.
 
 | Type | Purpose |
@@ -346,7 +349,6 @@ Key environment variables in `.env`:
 | `DEFAULT_MAX_CONCURRENT_JOBS` | `20` | Max queued/running jobs per API key. |
 | `ACCOUNT_MAX_CONCURRENCY` | `2000` | Maximum concurrency ceiling per account. |
 | `QUEUE_MAX_PENDING` | `2000` | Global queue limit before backpressure. |
-| `CHROMIUM_PATH` | *auto-detected* | Custom executable path for Chromium/Chrome. |
 
 ---
 

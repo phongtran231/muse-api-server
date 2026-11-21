@@ -9,7 +9,7 @@
 const express = require('express');
 const path = require('node:path');
 const config = require('../config');
-const { Account, ApiKey, Job, File, Setting } = require('../models');
+const { Account, ApiKey, Job, File, Setting, JOB_STATUSES, JOB_TYPES, TERMINAL_STATUSES } = require('../models');
 const { pool } = require('../services/pool');
 const { dispatcher } = require('../services/dispatcher');
 const chat = require('../services/chat');
@@ -136,12 +136,76 @@ router.get('/api/auth/me', (req, res) => {
   });
 });
 
+const OVERVIEW_CACHE_MS = 3000;
+const BENCHMARK_SAMPLE = 500;
+let overviewCache = { at: 0, promise: null };
+
+/** Counts jobs per status and type from the {status, type, created_at} index (COUNT_SCAN, no document reads). */
+async function jobCountsByStatusAndType() {
+  const pairs = JOB_STATUSES.flatMap((status) => JOB_TYPES.map((type) => ({ status, type })));
+  const counts = await Promise.all(pairs.map((p) => Job.countDocuments(p)));
+  return pairs.map((p, i) => ({ ...p, count: counts[i] }));
+}
+
+/** Average render time over the latest succeeded jobs of a type (index-bounded sample). */
+function benchmarkFor(type) {
+  return Job.aggregate([
+    { $match: { status: 'succeeded', type } },
+    { $sort: { created_at: -1 } },
+    { $limit: BENCHMARK_SAMPLE },
+    { $match: { started_at: { $ne: null }, completed_at: { $ne: null } } },
+    { $group: { _id: type, avgDurationMs: { $avg: { $subtract: ['$completed_at', '$started_at'] } }, count: { $sum: 1 } } }
+  ]);
+}
+
+/**
+ * Database part of the overview. The dashboard polls it every few seconds
+ * (per open tab), so results are shared for OVERVIEW_CACHE_MS and concurrent
+ * requests reuse the in-flight query.
+ */
+function loadOverviewStats() {
+  if (overviewCache.promise && Date.now() - overviewCache.at < OVERVIEW_CACHE_MS) return overviewCache.promise;
+  const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
+  const promise = Promise.all([
+    Account.find({}).select('enabled status concurrency').lean(),
+    jobCountsByStatusAndType(),
+    Promise.all(JOB_TYPES.map(benchmarkFor)).then((r) => r.flat()),
+    Job.countDocuments({ created_at: { $gte: dayAgo } }),
+    ApiKey.countDocuments({ enabled: true }),
+    ApiKey.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalRequests: { $sum: '$usage.requests' },
+          totalChat: { $sum: '$usage.chat_completions' },
+          totalImages: { $sum: '$usage.images' },
+          totalVideos: { $sum: '$usage.videos' }
+        }
+      }
+    ]),
+    File.aggregate([{ $group: { _id: '$kind', totalBytes: { $sum: '$bytes' }, count: { $sum: 1 } } }]),
+    Job.find({}).sort({ created_at: -1 }).limit(10).select('-webhook.body').lean()
+  ]);
+  overviewCache = { at: Date.now(), promise };
+  promise.catch(() => { if (overviewCache.promise === promise) overviewCache = { at: 0, promise: null }; });
+  return promise;
+}
+
 // System overview summary for dashboard cards
 router.get('/api/overview', async (req, res, next) => {
   try {
     const mongoose = require('mongoose');
     const snapshot = pool.snapshot();
-    const accountsList = await Account.find({}).lean();
+    const [
+      accountsList,
+      jobCounts,
+      jobBenchmarks,
+      jobs24hCount,
+      apiKeysCount,
+      trafficStats,
+      storageStats,
+      recentJobs
+    ] = await loadOverviewStats();
 
     let onlineCount = 0;
     let degradedCount = 0;
@@ -183,75 +247,11 @@ router.get('/api/overview', async (req, res, next) => {
       }
     }
 
-    const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
-
-    const [
-      jobStats,
-      jobTypeStats,
-      jobBenchmarks,
-      jobs24hCount,
-      apiKeysCount,
-      trafficStats,
-      storageStats,
-      recentJobs
-    ] = await Promise.all([
-      // 1. Job status breakdown
-      Job.aggregate([
-        { $group: { _id: '$status', count: { $sum: 1 } } }
-      ]),
-      // 2. Job type breakdown
-      Job.aggregate([
-        { $group: { _id: '$type', count: { $sum: 1 } } }
-      ]),
-      // 3. Benchmarks (avg render times)
-      Job.aggregate([
-        { $match: { status: 'succeeded', started_at: { $ne: null }, completed_at: { $ne: null } } },
-        {
-          $group: {
-            _id: '$type',
-            avgDurationMs: { $avg: { $subtract: ['$completed_at', '$started_at'] } },
-            count: { $sum: 1 }
-          }
-        }
-      ]),
-      // 4. Jobs in last 24 hours
-      Job.countDocuments({ created_at: { $gte: dayAgo } }),
-      // 5. Active API keys
-      ApiKey.countDocuments({ enabled: true }),
-      // 6. Traffic totals across API keys
-      ApiKey.aggregate([
-        {
-          $group: {
-            _id: null,
-            totalRequests: { $sum: '$usage.requests' },
-            totalChat: { $sum: '$usage.chat_completions' },
-            totalImages: { $sum: '$usage.images' },
-            totalVideos: { $sum: '$usage.videos' }
-          }
-        }
-      ]),
-      // 7. Storage breakdown by kind
-      File.aggregate([
-        {
-          $group: {
-            _id: '$kind',
-            totalBytes: { $sum: '$bytes' },
-            count: { $sum: 1 }
-          }
-        }
-      ]),
-      // 8. Recent jobs
-      Job.find({}).sort({ created_at: -1 }).limit(10).lean()
-    ]);
-
     const jobsSummary = { queued: 0, running: 0, succeeded: 0, failed: 0, canceled: 0 };
-    for (const item of jobStats) {
-      if (jobsSummary[item._id] !== undefined) jobsSummary[item._id] = item.count;
-    }
-
     const typeSummary = { image: 0, video: 0 };
-    for (const item of jobTypeStats) {
-      if (typeSummary[item._id] !== undefined) typeSummary[item._id] = item.count;
+    for (const { status, type, count } of jobCounts) {
+      jobsSummary[status] += count;
+      typeSummary[type] += count;
     }
 
     const benchmarks = { image_avg_sec: 0, video_avg_sec: 0 };
@@ -376,8 +376,8 @@ router.post('/api/accounts', async (req, res, next) => {
 // Shared proxy pool (accounts with proxy "pool" pick a random entry per connection).
 router.get('/api/proxy-pool', async (req, res, next) => {
   try {
-    const accounts = await Account.find({}).select('+proxy').lean();
-    res.json({ proxies: proxyPool.list(), status: proxyPool.status(), accounts_on_pool: accounts.filter((a) => a.proxy === 'pool').length, accounts_total: accounts.length });
+    const [onPool, total] = await Promise.all([Account.countDocuments({ proxy: 'pool' }), Account.countDocuments({})]);
+    res.json({ proxies: proxyPool.list(), status: proxyPool.status(), accounts_on_pool: onPool, accounts_total: total });
   } catch (err) {
     next(err);
   }
@@ -423,8 +423,7 @@ router.post('/api/accounts/import', async (req, res, next) => {
       cookies: body.cookies,
       proxies: body.proxies,
       prefix: body.prefix,
-      validate: body.validate !== false,
-      use_browser: Boolean(body.use_browser)
+      validate: body.validate !== false
     }));
   } catch (err) {
     next(err);
@@ -501,8 +500,7 @@ router.patch('/api/accounts/:id', async (req, res, next) => {
           wss_url: body.wss_url,
           cookie: body.cookie,
           cookie_string: body.credential,
-          proxy: doc.proxy,
-          preferBrowser: Boolean(body.use_browser)
+          proxy: doc.proxy
         },
         doc.credential
       );
@@ -550,8 +548,7 @@ router.post('/api/accounts/:id/test', async (req, res, next) => {
 // Refresh WSS URL from Cookie
 router.post('/api/accounts/:id/refresh', async (req, res, next) => {
   try {
-    const useBrowser = Boolean(req.body?.use_browser);
-    const result = await pool.refreshCredential(req.params.id, { preferBrowser: useBrowser });
+    const result = await pool.refreshCredential(req.params.id);
     const fresh = await Account.findById(req.params.id).select('+credential +proxy').lean();
     res.json({ ...serializeAccount(fresh, pool.snapshot().accounts[req.params.id] || null), refresh: result });
   } catch (err) {
@@ -763,7 +760,7 @@ router.get('/api/jobs', async (req, res, next) => {
     if (type) query.type = type;
     if (status) query.status = status;
 
-    const docs = await Job.find(query).sort({ created_at: -1 }).limit(Math.min(100, Number(limit) || 50)).lean();
+    const docs = await Job.find(query).sort({ created_at: -1 }).limit(Math.min(100, Number(limit) || 50)).select('-webhook.body').lean();
     const names = await accountNames(docs);
     res.json(docs.map((j) => ({ ...serializeJob(j), diagnostics: jobDiagnostics(j, names) })));
   } catch (err) {
@@ -870,7 +867,7 @@ router.post('/api/playground/chat', async (req, res, next) => {
 // 2. Dispatch Image or Video Generation Job
 router.post('/api/playground/generate', async (req, res, next) => {
   try {
-    const { type, prompt, aspect_ratio, duration, reference_file_id } = req.body || {};
+    const { type, prompt, aspect_ratio, duration, reference_file_id, reference_image_url } = req.body || {};
     if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
       throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'Prompt is required.' });
     }
@@ -885,13 +882,25 @@ router.post('/api/playground/generate', async (req, res, next) => {
     };
     await dispatcher.assertCanEnqueue(type, adminApiKey);
 
-    const reference = { image_file_id: null, video_file_id: null };
+    const reference = { image_urls: [], image_file_id: null, image_file_ids: [], video_file_id: null };
 
-    if (reference_file_id) {
+    if (type === 'image' && reference_file_id) {
+      throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'Image references must be provided as an HTTP(S) URL.' });
+    }
+    if (type === 'image' && reference_image_url !== undefined && reference_image_url !== null && reference_image_url !== '') {
+      let parsed;
+      try { if (typeof reference_image_url === 'string') parsed = new URL(reference_image_url); } catch {}
+      if (typeof reference_image_url !== 'string' || !parsed || !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || reference_image_url.length > 2048) {
+        throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'Image reference must be an HTTP(S) URL without embedded credentials.' });
+      }
+      reference.image_urls.push(reference_image_url);
+    }
+
+    if (type === 'video' && reference_file_id) {
       const fileDoc = await File.findById(reference_file_id).lean();
       if (fileDoc) {
-        if (fileDoc.kind === 'video') reference.video_file_id = fileDoc._id;
-        else reference.image_file_id = fileDoc._id;
+        if (fileDoc.kind !== 'video') throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'Video references must be uploaded videos.' });
+        reference.video_file_id = fileDoc._id;
       }
     }
 
@@ -932,9 +941,11 @@ router.get('/api/playground/jobs', async (req, res, next) => {
     }
 
     // Always include active work, even when many newer completed jobs exist.
+    // $in (not $nin) on status lets both queries walk the {status, type, created_at} index.
+    const fields = 'status progress progress_text type prompt params output error created_at started_at completed_at';
     const [active, recent] = await Promise.all([
-      Job.find({ ...query, status: { $in: ['queued', 'running'] } }).sort({ created_at: -1 }).lean(),
-      Job.find({ ...query, status: { $nin: ['queued', 'running'] } }).sort({ created_at: -1 }).limit(30).lean()
+      Job.find({ ...query, status: { $in: ['queued', 'running'] } }).sort({ created_at: -1 }).limit(200).select(fields).lean(),
+      Job.find({ ...query, status: { $in: TERMINAL_STATUSES } }).sort({ created_at: -1 }).limit(30).select(fields).lean()
     ]);
     const docs = [...active, ...recent].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     const jobs = docs.map((job) => {
@@ -1017,6 +1028,7 @@ router.post('/api/playground/upload', async (req, res, next) => {
 
     const file = await media.ingestBuffer({
       buffer,
+      expectedKind: 'video',
       apiKeyId: 'key_admin_playground',
       purpose: 'reference',
       filename: filename || `upload_${Date.now()}`,

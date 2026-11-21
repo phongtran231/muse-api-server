@@ -217,7 +217,6 @@ async function reserveNames(prefix, count, existingNames) {
  * @param {string} [input.proxies] One proxy per line; spread over the new accounts.
  * @param {string} [input.prefix]  Account name prefix (default "acc").
  * @param {boolean} [input.validate]  Live connection test before keeping an account (default true).
- * @param {boolean} [input.use_browser]
  */
 async function createBatch(input) {
   assertEnabled();
@@ -286,7 +285,7 @@ async function createBatch(input) {
 
   await queue.addBulk(toQueue.map(({ item, cookie, proxy }) => ({
     name: 'import',
-    data: { batchId, index: item.index, name: item.name, email: item.email, cookie, proxy, validate: meta.validate, use_browser: Boolean(input.use_browser) },
+    data: { batchId, index: item.index, name: item.name, email: item.email, cookie, proxy, validate: meta.validate },
     // Cookies must not linger in Redis once processed.
     opts: { jobId: `${batchId}-${item.index}`, removeOnComplete: true, removeOnFail: true }
   })));
@@ -323,7 +322,7 @@ function withTimeout(promise, ms) {
 }
 
 async function processItem(job) {
-  const { batchId, index, name, email, cookie, proxy, validate, use_browser, retries = 0 } = job.data;
+  const { batchId, index, name, email, cookie, proxy, validate, retries = 0 } = job.data;
   const item = await getItem(batchId, index);
   if (!item || item.status === 'canceled') return;
   item.status = 'processing';
@@ -337,7 +336,7 @@ async function processItem(job) {
       Object.assign(item, { status: 'skipped', error: 'Duplicate: this session (hatch_sess) is already an account.' });
     } else {
       await checkProxy(proxy);
-      const onboarding = onboardAccount({ name, email, cookie, proxy, validate, use_browser });
+      const onboarding = onboardAccount({ name, email, cookie, proxy, validate });
       try {
         const { account, test } = await withTimeout(onboarding, config.accountImport.itemTimeoutMs);
         Object.assign(item, { status: 'done', error: null, account_id: account._id, latency_ms: test?.latency_ms ?? null });

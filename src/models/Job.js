@@ -30,6 +30,8 @@ const JobSchema = new mongoose.Schema(
       reference_image_hints: { type: [mongoose.Schema.Types.Mixed], default: [] }
     },
     reference: {
+      // Public image URLs are forwarded to Muse unchanged (no server download).
+      image_urls: { type: [String], default: [] },
       image_file_id: { type: String, default: null },
       // All reference images in order. image_file_id mirrors the first one for older readers.
       image_file_ids: { type: [String], default: [] },
@@ -86,14 +88,28 @@ const JobSchema = new mongoose.Schema(
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }, versionKey: false }
 );
 
-// Dispatcher claim path: oldest queued job per type.
+// Dispatcher claim path: oldest queued job per type; also per-status/type counts.
 JobSchema.index({ status: 1, type: 1, created_at: 1 });
+// Admin listings (newest first, optionally by status or type) and 24h counts.
+JobSchema.index({ created_at: -1 });
+JobSchema.index({ status: 1, created_at: -1 });
+JobSchema.index({ type: 1, created_at: -1 });
+// Startup seed of 24h per-account usage (pool._loadRecentUses).
+JobSchema.index({ started_at: 1 });
 // Client listings & per-key concurrency counting.
 JobSchema.index({ api_key_id: 1, created_at: -1 });
 JobSchema.index({ api_key_id: 1, status: 1 });
 // Orphan detection (stale heartbeats).
 JobSchema.index({ status: 1, heartbeat_at: 1 });
-JobSchema.index({ status: 1, 'webhook.delivered': 1, 'webhook.next_attempt_at': 1 });
+// Webhook outbox: only jobs with an undelivered webhook are indexed, so the 2s
+// drain loop reads a handful of entries instead of every terminal job.
+JobSchema.index(
+  { completed_at: 1 },
+  {
+    name: 'webhook_outbox',
+    partialFilterExpression: { 'webhook.url': { $type: 'string' }, 'webhook.delivered': false, 'webhook.abandoned': false }
+  }
+);
 // Idempotency: one job per (api key, idempotency key).
 JobSchema.index(
   { api_key_id: 1, idempotency_key: 1 },

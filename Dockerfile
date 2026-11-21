@@ -10,20 +10,13 @@ RUN npm ci --omit=dev --no-audit --no-fund
 FROM node:22-alpine
 ENV NODE_ENV=production \
     PORT=8080 \
-    STORAGE_DIR=/data/storage \
-    CHROMIUM_PATH=/usr/bin/chromium-browser \
-    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+    STORAGE_DIR=/data/storage
 WORKDIR /app
 
-# tini reaps zombies; chromium + fonts enable headless browser automation.
+# tini reaps application child processes.
 RUN apk add --no-cache \
     tini \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
     ca-certificates \
-    ttf-freefont \
   && mkdir -p /data/storage \
   && chown -R node:node /data
 

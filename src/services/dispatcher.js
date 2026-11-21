@@ -444,37 +444,50 @@ class Dispatcher extends EventEmitter {
 
   async _loadReferences(job) {
     const refs = { images: [], video: null };
-    const imageIds = job.reference?.image_file_ids?.length ? job.reference.image_file_ids : [job.reference?.image_file_id].filter(Boolean);
-    const maxImageBytes = media.upstreamImageBudget(imageIds.length);
-    const load = async (fileId, param) => {
+    const imageUrls = job.reference?.image_urls || [];
+    if (imageUrls.length) {
+      refs.images = imageUrls.map((url) => ({ url }));
+    } else {
+      // Older queued jobs stored uploaded image file IDs. Forward a signed URL
+      // for those jobs too, without reading or base64-encoding the image.
+      const imageIds = job.reference?.image_file_ids?.length ? job.reference.image_file_ids : [job.reference?.image_file_id].filter(Boolean);
+      for (const fileId of imageIds) {
+        try {
+          const doc = await storage.getFileOrThrow(fileId, { apiKeyId: job.api_key_id, param: 'reference_images[].image' });
+          if (doc.kind !== 'image') throw new Error('Reference file is not an image.');
+          refs.images.push({ url: storage.createSignedUrl(fileId).url });
+        } catch (err) {
+          throw new ApiError(ErrorCodes.REFERENCE_INVALID, { message: `The reference file '${fileId}' is no longer available.`, param: 'reference_images[].image' });
+        }
+      }
+    }
+    const loadVideo = async (fileId, param) => {
       try {
         const doc = await storage.getFileOrThrow(fileId, { apiKeyId: job.api_key_id, param });
-        return await media.toUpstreamPayload(doc, { maxImageBytes });
+        return await media.toUpstreamPayload(doc);
       } catch (err) {
         throw new ApiError(ErrorCodes.REFERENCE_INVALID, { message: `The reference file '${fileId}' is no longer available.`, param });
       }
     };
-    // Older jobs only carry image_file_id (handled by imageIds above).
-    for (let i = 0; i < imageIds.length; i += 1) refs.images.push(await load(imageIds[i], `reference_images[${i}].image`));
-    if (job.reference?.video_file_id) refs.video = await load(job.reference.video_file_id, 'reference_video');
+    if (job.reference?.video_file_id) refs.video = await loadVideo(job.reference.video_file_id, 'reference_video');
     return refs;
   }
 
   /**
-   * The model rejects a request that attaches the same image twice ("the first two
-   * reference images you sent are the exact same") with a text reply instead of a
-   * video. Sends each distinct image once and renumbers "[Reference Image n]" tags.
+   * Sends duplicate image URLs once and renumbers "[Reference Image n]" tags.
+   * URL-only forwarding cannot detect identical bytes behind different URLs.
    */
   _dedupeReferences(job, references) {
-    const indexByData = new Map();
+    const indexByUrl = new Map();
     const images = [];
     const newIndex = []; // original position -> 1-based position after dedupe
     for (const img of references.images) {
-      if (!indexByData.has(img.data_base64)) {
+      const url = typeof img === 'string' ? img : img.url;
+      if (!indexByUrl.has(url)) {
         images.push(img);
-        indexByData.set(img.data_base64, images.length);
+        indexByUrl.set(url, images.length);
       }
-      newIndex.push(indexByData.get(img.data_base64));
+      newIndex.push(indexByUrl.get(url));
     }
     // Keep all roles when a first-frame image and a face reference are identical.
     const referenceImageHints = (job.params?.reference_image_hints || []).map((hint, index) => ({

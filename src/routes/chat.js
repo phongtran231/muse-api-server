@@ -17,7 +17,7 @@ const { validate } = require('../middleware/validate');
 const { methodNotAllowed, normalize } = require('../middleware/errorHandler');
 const { serializeConversation, list } = require('../serializers');
 const { logger } = require('../logger');
-const { z, metadataSchema, referenceSchema, listQuerySchema, idParamSchema, paginate, requestUrl } = require('./helpers');
+const { z, metadataSchema, referenceSchema, imageUrlSchema, listQuerySchema, idParamSchema, paginate, requestUrl } = require('./helpers');
 const { ApiError, ErrorCodes } = require('../errors');
 
 const log = logger.child({ component: 'chat-route' });
@@ -31,7 +31,7 @@ const MAX_TOTAL_TEXT = 200_000;
 const textPart = z.object({ type: z.literal('text'), text: z.string().max(100_000) });
 const imagePart = z.object({
   type: z.literal('image_url'),
-  image_url: z.object({ url: referenceSchema, detail: z.enum(['auto', 'low', 'high']).optional() })
+  image_url: z.object({ url: imageUrlSchema, detail: z.enum(['auto', 'low', 'high']).optional() })
 });
 const videoPart = z.object({ type: z.literal('video_url'), video_url: z.object({ url: referenceSchema }) });
 
@@ -187,4 +187,4 @@ conversationsRouter
   })
   .all(methodNotAllowed(['GET', 'DELETE']));
 
-module.exports = { chatRouter, conversationsRouter };
+module.exports = { chatRouter, conversationsRouter, chatRequestSchema };

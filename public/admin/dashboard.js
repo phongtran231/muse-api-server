@@ -557,9 +557,9 @@ async function testAccount(id) {
 }
 
 async function refreshAccount(id) {
-  showToast('Deriving fresh WebSocket URL from session cookie via Chromium...', 'info');
+  showToast('Refreshing WebSocket URL from session cookie via HTTP...', 'info');
   try {
-    const res = await api(`/accounts/${id}/refresh`, { method: 'POST', body: { use_browser: true } });
+    const res = await api(`/accounts/${id}/refresh`, { method: 'POST' });
     showToast('WebSocket renewed successfully!', 'success');
     loadAccounts();
   } catch (err) {
@@ -600,7 +600,6 @@ document.getElementById('formAddAccount')?.addEventListener('submit', async (e) 
     const cookie = document.getElementById('acctCookie').value.trim();
     const wss_url = document.getElementById('acctWss').value.trim();
     const proxy = document.getElementById('acctProxy').value.trim();
-    const use_browser = document.getElementById('acctUseBrowser').checked;
     const validate = document.getElementById('acctValidate').checked;
 
     if (!cookie && !wss_url) {
@@ -623,7 +622,6 @@ document.getElementById('formAddAccount')?.addEventListener('submit', async (e) 
         cookie: cookie || undefined,
         wss_url: wss_url || undefined,
         proxy: proxy || undefined,
-        use_browser,
         validate,
         concurrency: Object.keys(concurrency).length ? concurrency : undefined
       }
@@ -1093,8 +1091,7 @@ document.getElementById('formBulkImport')?.addEventListener('submit', async (e) 
         cookies: document.getElementById('bulkCookies').value,
         proxies: document.getElementById('bulkProxies').value,
         prefix: document.getElementById('bulkPrefix').value.trim(),
-        validate: document.getElementById('bulkValidate').checked,
-        use_browser: document.getElementById('bulkUseBrowser').checked
+        validate: document.getElementById('bulkValidate').checked
       }
     });
     const queued = batch.counts?.queued || 0;
@@ -1174,7 +1171,7 @@ let currentStudioTab = 'image';
 let selectedImageRatio = '1:1';
 let selectedVideoRatio = '16:9';
 let selectedVideoDuration = 5;
-let uploadedImageRefId = null;
+let uploadedImageRefUrl = null;
 let uploadedVideoRefId = null;
 let lastImageOutputUrl = '';
 let lastVideoOutputUrl = '';
@@ -1467,7 +1464,7 @@ async function studioGenerateImage() {
 
   const btn = document.getElementById('btnGenerateImage');
   if (btn.disabled) return;
-  const request = { type: 'image', prompt, aspect_ratio: selectedImageRatio, reference_file_id: uploadedImageRefId };
+  const request = { type: 'image', prompt, aspect_ratio: selectedImageRatio, reference_image_url: uploadedImageRefUrl };
   const originalHtml = btn.innerHTML;
 
   // Visual non-blocking queue feedback
@@ -1814,7 +1811,7 @@ async function studioGenerateVideo() {
 
 // ---- File Uploads for References ----
 
-async function handleStudioFileUpload(file, mode) {
+async function handleStudioFileUpload(file) {
   if (!file) return;
   showToast(`Uploading ${file.name}...`, 'info');
 
@@ -1830,18 +1827,10 @@ async function handleStudioFileUpload(file, mode) {
         }
       });
 
-      if (mode === 'image') {
-        uploadedImageRefId = res.file_id;
-        document.getElementById('imageDropzoneContent').style.display = 'none';
-        document.getElementById('imageFileThumb').src = res.url;
-        document.getElementById('imageFileName').textContent = file.name;
-        document.getElementById('imageFilePreviewContainer').style.display = 'flex';
-      } else {
-        uploadedVideoRefId = res.file_id;
-        document.getElementById('videoDropzoneContent').style.display = 'none';
-        document.getElementById('videoFileName').textContent = file.name;
-        document.getElementById('videoFilePreviewContainer').style.display = 'flex';
-      }
+      uploadedVideoRefId = res.file_id;
+      document.getElementById('videoDropzoneContent').style.display = 'none';
+      document.getElementById('videoFileName').textContent = file.name;
+      document.getElementById('videoFilePreviewContainer').style.display = 'flex';
 
       showToast('Reference media uploaded successfully!', 'success');
     } catch (err) {
@@ -1853,15 +1842,31 @@ async function handleStudioFileUpload(file, mode) {
 
 function clearStudioFile(mode) {
   if (mode === 'image') {
-    uploadedImageRefId = null;
-    document.getElementById('imageFileInput').value = '';
-    document.getElementById('imageDropzoneContent').style.display = 'block';
+    uploadedImageRefUrl = null;
+    document.getElementById('studioImageReferenceUrl').value = '';
+    document.getElementById('imageFileThumb').removeAttribute('src');
     document.getElementById('imageFilePreviewContainer').style.display = 'none';
   } else {
     uploadedVideoRefId = null;
     document.getElementById('videoFileInput').value = '';
     document.getElementById('videoDropzoneContent').style.display = 'block';
     document.getElementById('videoFilePreviewContainer').style.display = 'none';
+  }
+}
+
+function previewStudioImageUrl(value) {
+  const preview = document.getElementById('imageFilePreviewContainer');
+  const image = document.getElementById('imageFileThumb');
+  uploadedImageRefUrl = null;
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid image URL');
+    uploadedImageRefUrl = value;
+    image.src = value;
+    preview.style.display = 'flex';
+  } catch {
+    image.removeAttribute('src');
+    preview.style.display = 'none';
   }
 }
 

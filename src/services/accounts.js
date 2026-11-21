@@ -37,8 +37,7 @@ async function onboardAccount(body) {
     wss_url: body.wss_url,
     cookie: body.cookie,
     cookie_string: body.credential,
-    proxy,
-    preferBrowser: Boolean(body.use_browser)
+    proxy
   });
   if (result.error) {
     throw new ApiError(ErrorCodes.CREDENTIAL_INVALID, { message: sanitize(result.error) });

@@ -43,7 +43,7 @@ const ISOLATION_POLICY = `# AGENTS.md
 const STATS_FLUSH_INTERVAL_MS = 10000;
 const RETIRE_CHECK_INTERVAL_MS = 5000;
 const RETIRE_MAX_WAIT_MS = 15 * 60 * 1000;
-// After waking a VM via Chromium it needs a few seconds before the WSS handshake succeeds.
+// After requesting a VM wake over HTTP, it needs a few seconds before the WSS handshake succeeds.
 const VM_WAKE_CONNECT_ATTEMPTS = 4;
 // Accounts are balanced on how often they were used in this window, so every
 // account gets a share instead of the few whose VM happens to be awake.
@@ -713,7 +713,7 @@ class AccountPool extends EventEmitter {
     // A renewal that ran just before (watchdog / keep-alive) already picked one: reuse it.
     const proxy = entry.renewedProxy !== undefined ? entry.renewedProxy : resolveProxy(entry.doc.proxy);
     entry.renewedProxy = undefined;
-    const renewOptions = wake ? { proxy } : { noBrowser: true, proxy };
+    const renewOptions = wake ? { wake: true, proxy } : { proxy };
     let credential = entry.doc.credential;
     let cred = describeCredential(credential);
     if (cred.type === 'wss' && cred.wss_expired) {
@@ -743,7 +743,7 @@ class AccountPool extends EventEmitter {
       await client.connect();
     } catch (err) {
       // 502/503/504 on the WSS handshake usually means the VM is suspended: a cookie
-      // renewal detects that and resumes it (Chromium fallback).
+      // renewal requests a wake over HTTP when this connection is needed by a job.
       const retryable = err.code === 'MUSE_AUTH_EXPIRED' || /403|401|\b50[234]\b|closed before the handshake|ECONNREFUSED|ETIMEDOUT|expired/i.test(err.message || '');
       this._closeClient(client);
 
@@ -761,12 +761,15 @@ class AccountPool extends EventEmitter {
             this._markSleeping(entry);
             throw healErr;
           }
-          // A fresh token still gets 5xx: the VM is stuck even if /api/session says
-          // RUNNING. Opening muse.ai in Chromium wakes it; it takes a few seconds to
-          // accept connections afterwards.
-          log.info({ account: entry.id, name: entry.doc.name }, 'VM still unavailable after renewal; waking it via Chromium');
-          await this._renewCredential(entry, { preferBrowser: true, proxy });
-          client = await this._connectWithRetry(entry, buildClient);
+          // The HTTP wake was accepted, but the VM may need a few more seconds.
+          // Retry the handshake only; never open a browser as a recovery path.
+          log.info({ account: entry.id, name: entry.doc.name }, 'VM still unavailable after HTTP wake; retrying handshake');
+          try {
+            client = await this._connectWithRetry(entry, buildClient);
+          } catch (wakeErr) {
+            log.warn({ account: entry.id, name: entry.doc.name, err: sanitize(wakeErr.message) }, 'VM did not resume after HTTP wake');
+            throw wakeErr;
+          }
         }
       } else {
         throw err;
@@ -939,7 +942,7 @@ class AccountPool extends EventEmitter {
    */
   async autoRenewAccount(entry, options = {}) {
     const { wake = false, ...renewOptions } = options;
-    const renewed = await this._renewCredential(entry, wake ? renewOptions : { noBrowser: true, ...renewOptions });
+    const renewed = await this._renewCredential(entry, { ...renewOptions, ...(wake ? { wake: true } : {}) });
     if (!renewed) return null;
     const client = await this._ensureClient(entry, { wake });
     this._reportSuccess(entry);
@@ -962,12 +965,11 @@ class AccountPool extends EventEmitter {
 
       log.info({ account: entry.id, name: entry.doc.name }, 'Auto-renewing WSS URL from attached cookie...');
 
-      const useBrowser = options.preferBrowser ?? options.useBrowser ?? Boolean(entry.doc.metadata?.use_browser);
       let result;
       try {
         const proxy = options.proxy !== undefined ? options.proxy : resolveProxy(entry.doc.proxy);
         if (options.proxy === undefined) entry.renewedProxy = proxy; // the next _connect uses the same IP
-        result = await fetchWssFromCookie(cred.cookie, proxy, { preferBrowser: useBrowser, ...options, proxy });
+        result = await fetchWssFromCookie(cred.cookie, proxy, { ...options, proxy });
       } catch (err) {
         if (err.code === 'MUSE_VM_SUSPENDED') {
           // Not a failure: Meta suspends idle VMs. Woken on demand (see _ensureClient).

@@ -14,7 +14,8 @@
  *  - New conversation with several messages: system prompts and prior turns
  *    are folded into a single transcript-style prompt.
  *  - Attachments (up to 4 images and 1 video) are taken from the final user
- *    message and accept file IDs, HTTPS URLs or base64 data URIs.
+ *    message. Images are passed to Muse as their original HTTP(S) URLs; videos
+ *    continue to be resolved and sent as file data.
  */
 
 const config = require('../config');
@@ -70,7 +71,7 @@ function buildPrompt(messages, continuing) {
   return parts.join('\n\n');
 }
 
-/** Resolves attachments of the final user message into upstream items. */
+/** Converts final-message attachments into upstream items. Image URLs stay unchanged. */
 async function resolveAttachments(message, apiKeyId) {
   if (!Array.isArray(message.content)) return { items: [], imageCount: 0, videoCount: 0 };
   const images = [];
@@ -86,13 +87,7 @@ async function resolveAttachments(message, apiKeyId) {
     throw new ApiError(ErrorCodes.PARAMETER_INVALID, { message: `At most ${MAX_VIDEOS} video can be attached to a message (received ${videos.length}).`, param: 'messages' });
   }
 
-  const items = [];
-  const maxImageBytes = media.upstreamImageBudget(images.length);
-  for (const img of images) {
-    const doc = await media.resolveReference(img.url, { expectedKind: 'image', apiKeyId, param: img.param });
-    const payload = await media.toUpstreamPayload(doc, { maxImageBytes });
-    items.push({ type: 'image', mime_type: payload.mime_type, data_base64: payload.data_base64 });
-  }
+  const items = images.map((img) => ({ type: 'image', url: img.url }));
   for (const vid of videos) {
     const doc = await media.resolveReference(vid.url, { expectedKind: 'video', apiKeyId, param: vid.param });
     const payload = await media.toUpstreamPayload(doc);
@@ -378,4 +373,4 @@ async function deleteConversation(conversation) {
   }
 }
 
-module.exports = { prepareChat, executeChat, deleteConversation, DEFAULT_MODEL, MAX_IMAGES, MAX_VIDEOS };
+module.exports = { prepareChat, executeChat, deleteConversation, resolveAttachments, DEFAULT_MODEL, MAX_IMAGES, MAX_VIDEOS };
