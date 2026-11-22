@@ -183,11 +183,12 @@ test('video generation turns image-to-video controls into upstream instructions'
   assert.match(sentPrompt, /\[Reference Image 1\] is the required opening frame/);
   assert.match(sentPrompt, /\[Reference Image 1\] is a face reference/);
   assert.doesNotMatch(sentPrompt, /\[Reference Image 2\]/);
-  assert.match(sentPrompt, /face identity/);
+  assert.match(sentPrompt, /Keep this character looking the same/);
+  assert.doesNotMatch(sentPrompt, /must look exactly|Lock the face|do not change facial features/);
   assert.match(sentPrompt, /Reference weight: 1/);
   assert.match(sentPrompt, /Visual style: realistic UGC fashion ad/);
   assert.match(sentPrompt, /Avoid these elements: different face, watermark/);
-  assert.match(sentPrompt, /Generation mode: image_to_video/);
+  assert.match(sentPrompt, /request:\nSame woman, keep face unchanged\n/);
   assert.match(sentPrompt, /9:16/);
   assert.match(sentPrompt, /8s/);
 });

@@ -207,16 +207,18 @@ function referenceInstructions(hints) {
     if (!hint || typeof hint !== 'object') return '';
     const tag = `[Reference Image ${hint.image_index || index + 1}]`;
     const weight = Number.isFinite(hint.weight) ? ` Reference weight: ${hint.weight}.` : '';
-    if (hint.role === 'first_frame') return `${tag} is the required opening frame; begin the video from this image and preserve its composition and subject identity.`;
+    // Character wording, not "lock the face / do not change facial features":
+    // likeness-copying language makes Muse refuse more often (deepfake policy).
+    if (hint.role === 'first_frame') return `${tag} is the required opening frame; start the video from this image and keep its composition.`;
     if (hint.type === 'face') {
-      const lock = hint.lock === true ? 'Lock the face identity to this reference; do not change facial features.' : 'Use this as the face identity reference and keep the same person throughout.';
-      return `${tag} is a face reference. ${lock}${weight}`;
+      const lock = hint.lock === true ? 'Keep this character looking the same as in this image throughout.' : 'Use it for how this character looks.';
+      return `${tag} is a face reference for a character. ${lock}${weight}`;
     }
     if (hint.type === 'product') {
       const lock = hint.lock === true ? ' Lock the product appearance to this reference; do not redesign or substitute it.' : '';
       return `${tag} is a product reference. Preserve the product shape, proportions, colors, materials, branding and distinctive details.${lock}${weight}`;
     }
-    return `${tag} is a visual reference.${hint.lock === true ? ' Preserve its subject identity and appearance throughout.' : ''}${weight}`;
+    return `${tag} is a visual reference.${hint.lock === true ? ' Keep its appearance consistent throughout.' : ''}${weight}`;
   }).filter(Boolean).join(' ');
 }
 
@@ -1725,7 +1727,7 @@ class MuseClient extends EventEmitter {
 
     let formattedPrompt = `Generate an image: ${prompt}${ratioHint}`;
     if (refImages.length) {
-      formattedPrompt = `${refImagesNote(refImages)} Use them as visual references: keep the identity, appearance and details of the people, products and objects they show. Generate a new image that follows this request: ${prompt}${ratioHint}`;
+      formattedPrompt = `${refImagesNote(refImages)} Use them as references for the characters, objects and setting, and keep their look consistent with the images. Generate a new image for this request: ${prompt}${ratioHint}`;
     } else if (refVideo) {
       formattedPrompt = `Using the attached reference video, generate a new image that follows this request: ${prompt}${ratioHint}`;
     }
@@ -1796,19 +1798,19 @@ class MuseClient extends EventEmitter {
     const refVideo = options.ref_video || options.refVideo || null;
     const aspectRatio = options.aspect_ratio || options.aspectRatio || '16:9';
     const duration = parseInt(options.duration, 10) || 5;
-    const mode = options.mode || (refImages.length ? 'image_to_video' : refVideo ? 'video_to_video' : 'text_to_video');
 
-    let formattedPrompt = `Create a high quality motion video based on this prompt: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
+    // The client's prompt goes in verbatim (no quotes around it: prompts often contain dialogue).
+    const spec = `Aspect ratio: ${aspectRatio}, duration: ${duration}s.`;
+    let formattedPrompt = `Create a high quality video for this request:\n${prompt}\n${spec}`;
     if (refImages.length) {
-      formattedPrompt = `${refImagesNote(refImages)} Use them as visual references: the people, products and objects in the video must look exactly like in these images. Create a smooth, high quality motion video: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s. Generate the video now.`;
+      formattedPrompt = `${refImagesNote(refImages)} Use them as references for the characters, objects and setting, and keep their look consistent with the images. Create a smooth, high quality video for this request:\n${prompt}\n${spec}`;
     } else if (refVideo) {
-      formattedPrompt = `Based on the attached reference video (Video-to-Video), regenerate a motion video with dynamic effects: "${prompt}". Aspect ratio: ${aspectRatio}, duration: ${duration}s.`;
+      formattedPrompt = `Using the attached reference video, create a new video for this request:\n${prompt}\n${spec}`;
     }
     const instructions = referenceInstructions(options.reference_image_hints);
     if (instructions) formattedPrompt += ` Reference instructions: ${instructions}`;
     if (options.style) formattedPrompt += ` Visual style: ${options.style}.`;
     if (options.negative_prompt) formattedPrompt += ` Avoid these elements: ${options.negative_prompt}.`;
-    formattedPrompt += ` Generation mode: ${mode}.`;
 
     const chatResult = await this.chat(formattedPrompt, {
       sessionId: null,
