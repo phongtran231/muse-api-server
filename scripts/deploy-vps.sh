@@ -7,27 +7,29 @@ set -euo pipefail
 # Container names differ per host (compose project); override with env vars.
 CONTAINER=${CONTAINER:-muse-api-server-api-1}
 MONGO=${MONGO:-muse-api-server-mongo-1}
-JOB_WAIT_SECONDS=${JOB_WAIT_SECONDS:-600}
+JOB_WAIT_SECONDS=${JOB_WAIT_SECONDS:-0}
 HEALTH_WAIT_SECONDS=${HEALTH_WAIT_SECONDS:-180}
 
 echo "Deploying $(git log --oneline -1)"
 
-# A restart re-queues running jobs and loses their progress: give them time to finish.
-active_jobs() {
+# Build while the old container keeps serving.
+docker compose build api
+
+# No waiting for jobs: on a busy server they never all finish, and the API shuts
+# down gracefully on its own (stops claiming, gives running jobs
+# SHUTDOWN_GRACE_MS, then re-queues the rest without consuming an attempt).
+# JOB_WAIT_SECONDS > 0 restores a bounded wait for *running* jobs only.
+running_jobs() {
   docker exec "$MONGO" mongosh muse_api --quiet --eval \
-    'print(db.jobs.countDocuments({ status: { $in: ["running", "queued"] } }))' 2>/dev/null || echo 0
+    'print(db.jobs.countDocuments({ status: "running" }))' 2>/dev/null || echo 0
 }
 waited=0
-while [ "$(active_jobs)" -gt 0 ] && [ "$waited" -lt "$JOB_WAIT_SECONDS" ]; do
-  echo "Waiting for $(active_jobs) running/queued job(s) to finish (${waited}s)..."
-  sleep 15
-  waited=$((waited + 15))
+while [ "$waited" -lt "$JOB_WAIT_SECONDS" ] && [ "$(running_jobs)" -gt 0 ]; do
+  echo "Waiting for $(running_jobs) running job(s) (${waited}s of ${JOB_WAIT_SECONDS}s)..."
+  sleep 5
+  waited=$((waited + 5))
 done
-if [ "$(active_jobs)" -gt 0 ]; then
-  echo "Jobs still active after ${JOB_WAIT_SECONDS}s; restarting anyway (they are re-queued)."
-fi
 
-docker compose build api
 docker compose up -d api
 
 waited=0
