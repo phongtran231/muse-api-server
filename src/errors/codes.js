@@ -79,6 +79,7 @@ const ErrorCodes = Object.freeze({
 
   // ---- 422 Unprocessable -----------------------------------------------------
   CREDENTIAL_INVALID: { status: 422, type: T.INVALID_REQUEST, code: 'credential_invalid', message: 'The upstream credential is invalid or could not establish a connection.' },
+  ACCOUNT_LIMIT_REACHED: { status: 503, type: T.SERVICE_UNAVAILABLE, code: 'account_limit_reached', message: 'Every available upstream account has reached its limit for this media type. Retry later.' },
   CONTENT_NOT_GENERATED: { status: 422, type: T.INVALID_REQUEST, code: 'content_not_generated', message: 'The model did not produce the requested output. Try rephrasing the prompt.' },
 
   // ---- 429 Too Many Requests -------------------------------------------------

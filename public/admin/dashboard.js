@@ -313,6 +313,17 @@ function quotaHtml(q) {
   return `<div style="font-size: 11px; margin-top: 3px; color: ${color};" title="${escapeHtml(title)}">${q.blocked ? 'OUT OF CREDITS · ' : ''}${escapeHtml(q.plan || '?')} · ${pct}% week · resets ${escapeHtml(resets)} · top-up ${formatCredits(q.topup_balance)}</div>`;
 }
 
+/** Capabilities paused on an account (daily cap reached / not allowed); they come back automatically. */
+function capabilityLimitsHtml(limits) {
+  const entries = Object.entries(limits || {});
+  if (!entries.length) return '';
+  return entries.map(([cap, l]) => {
+    const until = new Date(l.until).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const label = `${cap.toUpperCase()} PAUSED (${l.kind === 'cap' ? 'limit reached' : 'not allowed'}) until ${until}`;
+    return `<div style="font-size: 11px; margin-top: 3px; color: #FB7185;" title="${escapeHtml(l.message || '')}">${escapeHtml(label)}</div>`;
+  }).join('');
+}
+
 async function refreshQuota(id) {
   try {
     const res = await api('/account-quotas/refresh', { method: 'POST', body: JSON.stringify({ account_id: id }) });
@@ -375,6 +386,7 @@ async function loadAccounts() {
             <div class="cell-primary">${escapeHtml(a.name)}</div>
             <div class="font-mono" style="font-size: 11px; color: var(--text-dim);">${escapeHtml(a.id)}</div>
             ${quotaHtml(a.quota)}
+            ${capabilityLimitsHtml(a.capability_limits)}
           </td>
           <td><span class="badge badge-offline">${a.credential_type || 'cookie'}</span></td>
           <td>${statusBadge}</td>

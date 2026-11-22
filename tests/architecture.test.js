@@ -1071,3 +1071,30 @@ test('the job WebSocket never goes through a proxy; proxies are only for add/wak
   const connect = src.slice(src.indexOf('this.ws = new WebSocket(') - 600, src.indexOf('this.ws = new WebSocket('));
   assert.doesNotMatch(connect, /HttpsProxyAgent|wsOptions\.agent/);
 });
+
+test('account caps / access refusals pause that capability for 24h; content refusals do not', () => {
+  const { AccountPool, detectAccountLimit } = isolated('src/services/pool.js', {
+    '../models': { CAPABILITIES: ['chat', 'image', 'video'], Account: { updateOne: async () => ({}) } }
+  });
+  // Real content refusals seen in production: must never bench an account.
+  for (const reply of [
+    "I couldn't generate that video as requested. I can help with a different version instead — for example, a generic comedic character.",
+    "Declined, no video produced. I can't make this version from the reference photo — it's a realistic exact-identity video of a person who appears young.",
+    "I looked through all 9 references but I couldn't generate that video as requested. Want me to try that version?",
+    "Downloading all 10 references first so I can lock the faces, props, and ballroom look before generating. I couldn't generate that video as scripted.",
+    "Generating your 10-second vertical video from the reference image now. I couldn't generate that video. I can help with a different version instead."
+  ]) assert.equal(detectAccountLimit(reply), null, reply);
+  assert.equal(detectAccountLimit("You've reached your daily video limit. It resets in about 24 hours."), 'cap');
+  assert.equal(detectAccountLimit("I can't make more videos today — you've hit today's limit for video generation."), 'cap');
+  assert.equal(detectAccountLimit('Video generation is not available for your account right now.'), 'blocked');
+  assert.equal(detectAccountLimit("Your account doesn't have access to video generation."), 'blocked');
+
+  const pool = new AccountPool();
+  const entry = { id: 'a', removed: false, status: 'online', cooldownUntil: 0, doc: { name: 'a', enabled: true, capabilities: {}, capability_limits: {} } };
+  pool.entries.set('a', entry);
+  assert.equal(pool._supports(entry, 'video'), true);
+  pool.limitCapability('a', 'video', { kind: 'cap', message: 'daily limit' });
+  assert.equal(pool._supports(entry, 'video'), false);
+  assert.equal(pool._supports(entry, 'image'), true); // only the capped capability pauses
+  assert.equal(pool._supports(entry, 'video', Date.now() + 24 * 3600e3 + 1000), true); // back after 24h
+});

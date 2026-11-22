@@ -77,6 +77,21 @@ const RATE_LIMIT_BACKOFF_MAX_MS = 10 * 60 * 1000;
 function isUpstreamRateLimited(err) {
   return err?.code === 'UPSTREAM_RATE_LIMITED' || /Unexpected server response: 429/.test(err?.message || '');
 }
+// The model refuses in text when the ACCOUNT (not the prompt) cannot produce media.
+// Only explicit limit / access wording matches; content refusals ("I couldn't
+// generate that video as written…") do not, so healthy accounts are never benched.
+const CAP_RE = /\b(daily|24[- ]?hours?|today['’]?s?|per[- ]day)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance)\b|\b(reached|hit|used up|exhausted|maxed out|run out of)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance|generations?|credits?)\b|\bno (more )?(video |image )?(generations?|credits?) (left|remaining)\b|\b(limit|quota) (resets?|will reset|refreshes)\b/i;
+const BLOCKED_RE = /\b(video|image) generation (is |isn['’]t |is not )?(currently )?(not )?(available|enabled|supported|turned on) (for|on|in) (your|this) (account|region|country|plan)\b|\b(your|this) (account|plan) (can['’]?t|cannot|isn['’]t able to|is not able to|doesn['’]t have access to|does not have access to|is not eligible)\b[^.!?\n]{0,40}\b(videos?|images?|generation)\b|\b(don['’]?t|do not) have access to (video|image) generation\b|\b(video|image) generation (has been|is) (disabled|restricted|blocked|paused)\b/i;
+const CAPABILITY_LIMIT_MS = 24 * 60 * 60 * 1000;
+
+/** 'cap' | 'blocked' | null for a text-only model reply to a media request. */
+function detectAccountLimit(text) {
+  const t = String(text || '');
+  if (BLOCKED_RE.test(t)) return 'blocked';
+  if (CAP_RE.test(t)) return 'cap';
+  return null;
+}
+
 /**
  * Proxy for the muse.ai HTTP calls that add / wake an account: its own proxy,
  * else a random proxy-pool entry (null when the pool is empty). Jobs never use it.
@@ -227,8 +242,28 @@ class AccountPool extends EventEmitter {
     return this.dynamicConcurrency?.[capability] || config.pool.defaultConcurrency[capability];
   }
 
-  _supports(entry, capability) {
-    return !entry.removed && entry.doc.enabled && entry.doc.capabilities?.[capability] !== false;
+  _supports(entry, capability, now = Date.now()) {
+    return !entry.removed && entry.doc.enabled && entry.doc.capabilities?.[capability] !== false && !this._isCapabilityLimited(entry, capability, now);
+  }
+
+  /** Paused for this capability after a cap / access refusal (see limitCapability). */
+  _isCapabilityLimited(entry, capability, now = Date.now()) {
+    const until = Date.parse(entry.doc.capability_limits?.[capability]?.until || '') || 0;
+    return until > now;
+  }
+
+  /**
+   * Stops sending `capability` jobs to an account until `until` (default 24h):
+   * its daily cap was reached ('cap') or it may not use the capability ('blocked').
+   * Persisted, so a restart keeps the pause.
+   */
+  limitCapability(accountId, capability, { kind, message = null, until = null } = {}) {
+    const entry = this.entries.get(accountId);
+    if (!entry) return;
+    const limit = { kind, until: new Date(until || Date.now() + CAPABILITY_LIMIT_MS).toISOString(), message: message ? sanitize(message).slice(0, 300) : null, at: new Date().toISOString() };
+    entry.doc.capability_limits = { ...(entry.doc.capability_limits || {}), [capability]: limit };
+    Account.updateOne({ _id: accountId }, { $set: { [`capability_limits.${capability}`]: limit } }).catch((err) => log.warn({ account: accountId, err: err.message }, 'Failed to persist capability limit'));
+    log.warn({ account: accountId, name: entry.doc.name, capability, kind, until: limit.until }, `Account ${kind === 'cap' ? 'reached its limit' : 'is blocked'} for ${capability}; no ${capability} jobs until ${limit.until}`);
   }
 
   _isHealthy(entry, now = Date.now()) {
@@ -238,7 +273,8 @@ class AccountPool extends EventEmitter {
   /** The upstream reported the account out of credits (should_block_llm_inference) and it has not reset yet. */
   _isQuotaBlocked(entry, now = Date.now()) {
     const q = entry.doc.quota;
-    if (!q?.blocked) return false;
+    const exhausted = q && (q.blocked || (q.usage_percent ?? 0) >= 100 || /exhaust|insufficient|depleted|exceeded|empty/i.test(q.usage_status || ''));
+    if (!exhausted) return false;
     const resetsAt = Date.parse(q.resets_at || '') || 0;
     return !resetsAt || resetsAt > now;
   }
@@ -263,7 +299,7 @@ class AccountPool extends EventEmitter {
       await Account.updateOne({ _id: entry.id }, { $set: { quota } }).catch(() => {});
       if (this._isQuotaBlocked(entry) && !wasBlocked) {
         log.warn({ account: entry.id, name: entry.doc.name, usage: quota.usage_percent, resetsAt: quota.resets_at }, 'Account is out of credits; skipped until its quota resets');
-      } else if (wasBlocked && !quota.blocked) {
+      } else if (wasBlocked && !this._isQuotaBlocked(entry)) {
         for (const capability of CAPABILITIES) this._drain(capability);
       }
       return quota;
@@ -1297,4 +1333,4 @@ class AccountPool extends EventEmitter {
 
 const pool = new AccountPool();
 
-module.exports = { pool, AccountPool, Lease };
+module.exports = { pool, AccountPool, Lease, detectAccountLimit };

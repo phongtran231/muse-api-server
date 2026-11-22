@@ -44,6 +44,9 @@ const AccountSchema = new mongoose.Schema(
     },
     // Last credit / quota snapshot from the upstream (pool.refreshQuota).
     quota: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Per-capability pauses after the model said the account hit its limit or may
+    // not use the capability: { video: { until, kind: 'cap'|'blocked', message, at } }.
+    capability_limits: { type: mongoose.Schema.Types.Mixed, default: {} },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }, versionKey: false }

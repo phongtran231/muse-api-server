@@ -90,6 +90,9 @@ function serializeAccount(doc, live = null) {
     wss_expires_at: iso(doc.wss_expires_at),
     has_proxy: Boolean(doc.proxy),
     capabilities: { chat: doc.capabilities?.chat !== false, image: doc.capabilities?.image !== false, video: doc.capabilities?.video !== false },
+    capability_limits: Object.fromEntries(Object.entries(doc.capability_limits || {})
+      .filter(([, l]) => l?.until && Date.parse(l.until) > Date.now())
+      .map(([cap, l]) => [cap, { kind: l.kind, until: l.until, message: l.message || null }])),
     concurrency: {
       chat: doc.concurrency?.chat ?? null,
       image: doc.concurrency?.image ?? null,

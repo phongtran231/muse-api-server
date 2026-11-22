@@ -28,7 +28,7 @@ const { EventEmitter } = require('events');
 const config = require('../config');
 const { logger, sanitize } = require('../logger');
 const { Job, TERMINAL_STATUSES } = require('../models');
-const { pool } = require('./pool');
+const { pool, detectAccountLimit } = require('./pool');
 const storage = require('./storage');
 const media = require('./media');
 const usage = require('./usage');
@@ -386,6 +386,13 @@ class Dispatcher extends EventEmitter {
       if (!result?.success) {
         // The account worked; the model simply declined / produced nothing.
         ctx.lease.release({ success: true });
+        // ...unless the reply says the account itself is capped / not allowed:
+        // pause that capability on the account for 24h and retry elsewhere.
+        const limit = detectAccountLimit(result?.text || result?.error);
+        if (limit) {
+          pool.limitCapability(ctx.lease.accountId, job.type, { kind: limit, message: result?.text || result?.error });
+          throw new ApiError(ErrorCodes.ACCOUNT_LIMIT_REACHED, { message: sanitize(result?.error) || undefined });
+        }
         throw new ApiError(ErrorCodes.CONTENT_NOT_GENERATED, { message: sanitize(result?.error) || undefined });
       }
       if (!result.buffer || result.buffer.length === 0) {
@@ -553,6 +560,21 @@ class Dispatcher extends EventEmitter {
     }
 
     const excluded = [...(job.excluded_accounts || []), ...(lease ? [lease.accountId] : [])];
+
+    // The account hit its cap / may not make this media type: not the prompt's
+    // fault, so retry on another account without consuming an attempt.
+    if (apiError.code === 'account_limit_reached' && !this.stopping && pool.hasAlternative(job.type, excluded)) {
+      const res = await Job.updateOne(guard, {
+        $set: { status: 'queued', node_id: null, execution_id: null, account_id: null, progress: 0, progress_text: 'Account limit reached; retrying on another account', heartbeat_at: null, last_attempt_error: errorInfo },
+        $inc: { attempts: -1 },
+        ...(lease ? { $addToSet: { excluded_accounts: lease.accountId } } : {})
+      }).catch(() => null);
+      if (res?.matchedCount) {
+        log.warn({ job: job._id, account: lease?.accountId }, 'Account limit reached; job re-queued on another account');
+        return;
+      }
+    }
+
     const retryable = isAccountLevelFailure(apiError)
       && job.attempts < job.max_attempts
       && !this.stopping
