@@ -1099,3 +1099,16 @@ test('account caps / access refusals pause that capability for 24h; content refu
   assert.equal(pool._supports(entry, 'image'), true); // only the capped capability pauses
   assert.equal(pool._supports(entry, 'video', Date.now() + 24 * 3600e3 + 1000), true); // back after 24h
 });
+
+test('top-up credits keep an account usable after its weekly allowance is used up', () => {
+  const { AccountPool } = isolated('src/services/pool.js', {
+    '../models': { CAPABILITIES: ['chat', 'image', 'video'], Account: { updateOne: async () => ({}) } }
+  });
+  const pool = new AccountPool();
+  const resets_at = new Date(Date.now() + 3600e3).toISOString();
+  const at = (quota) => pool._isQuotaBlocked({ doc: { quota: { resets_at, ...quota } } });
+  assert.equal(at({ usage_percent: 100, usage_status: 'sufficient', topup_balance: 35000000, topup_status: 'sufficient', blocked: false }), false);
+  assert.equal(at({ usage_percent: 100, topup_balance: 0, topup_status: 'depleted', blocked: false }), true);
+  assert.equal(at({ usage_percent: 40, topup_balance: 0, topup_status: 'depleted', blocked: true }), true);
+  assert.equal(at({ usage_percent: 40, topup_balance: 0, topup_status: 'depleted', blocked: false }), false);
+});

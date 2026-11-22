@@ -277,7 +277,13 @@ class AccountPool extends EventEmitter {
   /** The upstream reported the account out of credits (should_block_llm_inference) and it has not reset yet. */
   _isQuotaBlocked(entry, now = Date.now()) {
     const q = entry.doc.quota;
-    const exhausted = q && (q.blocked || (q.usage_percent ?? 0) >= 100 || /exhaust|insufficient|depleted|exceeded|empty/i.test(q.usage_status || ''));
+    if (!q) return false;
+    // Weekly allowance used up only blocks when the top-up credits are gone too:
+    // Meta keeps serving from top-up (should_block_llm_inference stays false).
+    const spent = (status) => /exhaust|insufficient|depleted|exceeded|empty/i.test(status || '');
+    const weekExhausted = (q.usage_percent ?? 0) >= 100 || spent(q.usage_status);
+    const topupEmpty = !(Number(q.topup_balance) > 0) || spent(q.topup_status);
+    const exhausted = q.blocked || (weekExhausted && topupEmpty);
     if (!exhausted) return false;
     const resetsAt = Date.parse(q.resets_at || '') || 0;
     return !resetsAt || resetsAt > now;
