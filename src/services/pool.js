@@ -77,12 +77,9 @@ const RATE_LIMIT_BACKOFF_MAX_MS = 10 * 60 * 1000;
 function isUpstreamRateLimited(err) {
   return err?.code === 'UPSTREAM_RATE_LIMITED' || /Unexpected server response: 429/.test(err?.message || '');
 }
-/** Egress an account connects through; rate limits apply per IP. null = random pool proxy (not tracked). */
-function egressKey(doc) {
-  const proxy = doc?.proxy;
-  if (!proxy) return 'direct';
-  if (proxy === 'pool') return null;
-  return proxyLabel(proxy);
+/** WebSocket connections always go direct (proxies are only for add/wake HTTP calls), so one egress. */
+function egressKey() {
+  return 'direct';
 }
 
 /** A reserved slot on an account. Must be released exactly once. */
@@ -760,7 +757,7 @@ class AccountPool extends EventEmitter {
 
   async _connect(entry, { wake = false } = {}) {
     // One proxy per connection: with proxy "pool" a random pool entry is picked here
-    // and used for both the token renewal and the WebSocket, so a session keeps one IP.
+    // for the muse.ai HTTP calls (token renewal / wake); the WebSocket always goes direct.
     // A renewal that ran just before (watchdog / keep-alive) already picked one: reuse it.
     const proxy = entry.renewedProxy !== undefined ? entry.renewedProxy : resolveProxy(entry.doc.proxy);
     entry.renewedProxy = undefined;

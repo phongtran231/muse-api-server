@@ -569,16 +569,9 @@ class MuseClient extends EventEmitter {
         }
       };
 
-      const proxyUrl = this.proxy || process.env.MUSE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-      if (proxyUrl) {
-        try {
-          const { HttpsProxyAgent } = require('https-proxy-agent');
-          wsOptions.agent = new HttpsProxyAgent(proxyUrl);
-        } catch (e) {
-          console.warn('[Connect] Warning: Could not initialize HttpsProxyAgent for WebSocket:', e.message);
-        }
-      }
-
+      // The job connection always goes direct: proxies are only for the muse.ai
+      // HTTP calls that add / wake an account (session, wake, token in bootstrap).
+      // wss:// URLs are not tied to the IP that requested the token.
       this.ws = new WebSocket(this.wsUrl, wsOptions);
       const markAlive = () => { this.lastAliveAt = Date.now(); };
       this.ws.on('pong', markAlive);

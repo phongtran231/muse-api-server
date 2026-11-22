@@ -10,6 +10,7 @@ const config = require('../config');
 const { Account } = require('../models');
 const { pool } = require('./pool');
 const { composeCredentialAsync, describeCredential, normalizeProxy } = require('../core/credentials');
+const proxyPool = require('./proxyPool');
 const { sanitize } = require('../logger');
 const { ApiError, ErrorCodes } = require('../errors');
 
@@ -31,7 +32,9 @@ function sessionIdOf(cookieOrCredential) {
 async function onboardAccount(body) {
   const name = String(body.name || '').trim();
   if (!name) throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'Account name is required.' });
-  const proxy = normalizeProxy(body.proxy);
+  // Proxies are for adding / waking accounts (muse.ai HTTP calls); jobs connect direct.
+  // Like bulk import, use the shared pool when no proxy is given and the pool has entries.
+  const proxy = normalizeProxy(body.proxy) || (proxyPool.list().length ? 'pool' : null);
 
   const result = await composeCredentialAsync({
     wss_url: body.wss_url,

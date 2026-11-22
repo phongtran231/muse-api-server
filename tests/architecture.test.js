@@ -1061,6 +1061,13 @@ test('an upstream 429 pauses new connections through that egress instead of retr
   await assert.rejects(pool._ensureClient(a, { wake: true }), /429/);
   await assert.rejects(pool._ensureClient(b, { wake: true }), (err) => err.code === 'UPSTREAM_RATE_LIMITED');
   assert.equal(connects, 1);
-  await assert.rejects(pool._ensureClient(own, { wake: true }), /429/);
-  assert.equal(connects, 2); // a different egress is not paused
+  // Job WebSockets always go direct (proxies are only for add/wake), so a proxied account pauses too.
+  await assert.rejects(pool._ensureClient(own, { wake: true }), (err) => err.code === 'UPSTREAM_RATE_LIMITED');
+  assert.equal(connects, 1);
+});
+
+test('the job WebSocket never goes through a proxy; proxies are only for add/wake HTTP calls', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'core', 'client.js'), 'utf8');
+  const connect = src.slice(src.indexOf('this.ws = new WebSocket(') - 600, src.indexOf('this.ws = new WebSocket('));
+  assert.doesNotMatch(connect, /HttpsProxyAgent|wsOptions\.agent/);
 });
