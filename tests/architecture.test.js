@@ -1066,10 +1066,11 @@ test('an upstream 429 pauses new connections through that egress instead of retr
   assert.equal(connects, 1);
 });
 
-test('the job WebSocket never goes through a proxy; proxies are only for add/wake HTTP calls', () => {
+test('the job WebSocket uses only the job proxy pool, never the add/wake proxy', () => {
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'core', 'client.js'), 'utf8');
-  const connect = src.slice(src.indexOf('this.ws = new WebSocket(') - 600, src.indexOf('this.ws = new WebSocket('));
-  assert.doesNotMatch(connect, /HttpsProxyAgent|wsOptions\.agent/);
+  const connect = src.slice(src.indexOf('this.ws = new WebSocket(') - 700, src.indexOf('this.ws = new WebSocket('));
+  assert.match(connect, /new HttpsProxyAgent\(this\.jobProxy\)/);
+  assert.doesNotMatch(connect, /this\.proxy\b|MUSE_PROXY|HTTPS_PROXY/);
 });
 
 test('account caps / access refusals pause that capability for 24h; content refusals do not', () => {

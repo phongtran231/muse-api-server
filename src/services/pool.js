@@ -24,6 +24,7 @@
 const { EventEmitter } = require('events');
 const config = require('../config');
 const { logger, sanitize } = require('../logger');
+const proxyPool = require('./proxyPool');
 const { Account, CAPABILITIES, Setting, Job } = require('../models');
 const { MuseClient, fetchWssFromCookie } = require('../core/client');
 const { describeCredential, buildHybrid, resolveProxy = (p) => p || null } = require('../core/credentials');
@@ -100,9 +101,12 @@ function wakeProxy(doc) {
   return resolveProxy(doc?.proxy || 'pool');
 }
 
-/** WebSocket connections always go direct (proxies are only for add/wake HTTP calls), so one egress. */
+/**
+ * Egress of job WebSockets: direct from the server IP, unless the job proxy pool
+ * has entries (then every connection picks a random proxy: not tracked).
+ */
 function egressKey() {
-  return 'direct';
+  return proxyPool.job.list().length ? null : 'direct';
 }
 
 /** A reserved slot on an account. Must be released exactly once. */
@@ -824,8 +828,10 @@ class AccountPool extends EventEmitter {
       }
     }
 
+    // One job proxy per connection (random pick); null = direct.
+    const jobProxy = proxyPool.job.pick();
     const buildClient = (force) => {
-      const client = new MuseClient({ cookies: entry.doc.credential, proxy });
+      const client = new MuseClient({ cookies: entry.doc.credential, proxy, jobProxy });
       if (force) client.forceRefresh = true;
       return client;
     };
@@ -878,7 +884,7 @@ class AccountPool extends EventEmitter {
     this._persistRenewedCredential(entry, client);
     this._attachClientHandlers(entry, client);
     client.writeFile('AGENTS.md', Buffer.from(ISOLATION_POLICY, 'utf8')).catch(() => {});
-    log.info({ account: entry.id, name: entry.doc.name, proxy: proxyLabel(proxy) }, 'Upstream connection established');
+    log.info({ account: entry.id, name: entry.doc.name, proxy: proxyLabel(proxy), jobProxy: proxyLabel(jobProxy) }, 'Upstream connection established');
     setImmediate(() => this.refreshQuota(entry, { minIntervalMs: 30 * 60 * 1000 }).catch(() => {}));
     return client;
   }

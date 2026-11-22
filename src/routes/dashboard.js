@@ -402,6 +402,34 @@ router.post('/api/proxy-pool/check', async (req, res, next) => {
   }
 });
 
+// Job proxy pool: proxies for the job WebSocket (empty = jobs connect direct).
+router.get('/api/job-proxy-pool', async (req, res, next) => {
+  try {
+    res.json({ proxies: proxyPool.job.list(), status: proxyPool.job.status() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put('/api/job-proxy-pool', async (req, res, next) => {
+  try {
+    const proxies = await proxyPool.job.save((req.body || {}).proxies);
+    await proxyPool.job.checkAll();
+    res.json({ proxies, status: proxyPool.job.status() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/api/job-proxy-pool/check', async (req, res, next) => {
+  try {
+    await proxyPool.job.checkAll();
+    res.json({ status: proxyPool.job.status() });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Points every account at the pool; each reconnects with a random pool proxy.
 router.post('/api/proxy-pool/assign-all', async (req, res, next) => {
   try {

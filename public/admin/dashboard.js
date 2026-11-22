@@ -925,16 +925,24 @@ document.getElementById('openAddAccountBtn')?.addEventListener('click', () => op
 // ---------------------------------------------------------------------------
 // Shared proxy pool
 // ---------------------------------------------------------------------------
-async function loadProxyPool() {
-  const res = await api('/proxy-pool');
-  document.getElementById('proxyPoolList').value = (res.proxies || []).join('\n');
-  document.getElementById('proxyPoolCount').textContent = `${(res.proxies || []).length} proxies`;
-  document.getElementById('proxyPoolAccounts').textContent = `${res.accounts_on_pool} of ${res.accounts_total} accounts use the pool.`;
-  document.getElementById('proxyPoolStatus').innerHTML = (res.status || []).map((s) => `
+function proxyStatusHtml(status) {
+  return (status || []).map((s) => `
     <div style="display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border-subtle);">
       <span class="font-mono">${escapeHtml(s.proxy)}</span>
       <span style="color: ${s.alive ? '#34D399' : '#FB7185'};">${s.alive ? 'OK' : 'DOWN'}${s.error ? ` · ${escapeHtml(s.error)}` : ''}${s.checked_at ? ` · ${timeAgo(s.checked_at)}` : ' · not checked yet'}</span>
     </div>`).join('');
+}
+
+async function loadProxyPool() {
+  const job = await api('/job-proxy-pool');
+  document.getElementById('jobProxyPoolList').value = (job.proxies || []).join('\n');
+  document.getElementById('jobProxyPoolCount').textContent = job.proxies?.length ? `${job.proxies.length} proxies` : 'empty: jobs connect direct';
+  document.getElementById('jobProxyPoolStatus').innerHTML = proxyStatusHtml(job.status);
+  const res = await api('/proxy-pool');
+  document.getElementById('proxyPoolList').value = (res.proxies || []).join('\n');
+  document.getElementById('proxyPoolCount').textContent = `${(res.proxies || []).length} proxies`;
+  document.getElementById('proxyPoolAccounts').textContent = `${res.accounts_on_pool} of ${res.accounts_total} accounts use the pool.`;
+  document.getElementById('proxyPoolStatus').innerHTML = proxyStatusHtml(res.status);
 }
 
 document.getElementById('openProxyPoolBtn')?.addEventListener('click', async () => {
@@ -950,7 +958,8 @@ document.getElementById('formProxyPool')?.addEventListener('submit', async (e) =
   e.preventDefault();
   try {
     const res = await api('/proxy-pool', { method: 'PUT', body: { proxies: document.getElementById('proxyPoolList').value } });
-    showToast(`Proxy pool saved (${res.proxies.length} proxies).`, 'success');
+    const job = await api('/job-proxy-pool', { method: 'PUT', body: { proxies: document.getElementById('jobProxyPoolList').value } });
+    showToast(`Saved: ${res.proxies.length} add/wake proxies, ${job.proxies.length} job proxies.`, 'success');
     await loadProxyPool();
   } catch (err) {
     showToast(err.message, 'error');
@@ -962,7 +971,7 @@ document.getElementById('btnCheckProxyPool')?.addEventListener('click', async (e
   btn.disabled = true;
   btn.textContent = 'Checking...';
   try {
-    await api('/proxy-pool/check', { method: 'POST' });
+    await Promise.all([api('/proxy-pool/check', { method: 'POST' }), api('/job-proxy-pool/check', { method: 'POST' })]);
     await loadProxyPool();
   } catch (err) {
     showToast(err.message, 'error');

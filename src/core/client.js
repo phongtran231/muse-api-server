@@ -235,6 +235,8 @@ class MuseClient extends EventEmitter {
     this.wsUrl = options.wsUrl || null;
     this.cookies = options.cookies || DEFAULT_COOKIES;
     this.proxy = resolveProxy(options.proxy || process.env.MUSE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null);
+    // Proxy for the job WebSocket only (job proxy pool); `proxy` is for muse.ai HTTP calls.
+    this.jobProxy = options.jobProxy || null;
     // Bootstrap resumes a suspended VM with POST /api/hatch/vm/wake (what muse.ai does on page load).
     this.wake = Boolean(options.wake);
     this.ws = null;
@@ -569,9 +571,14 @@ class MuseClient extends EventEmitter {
         }
       };
 
-      // The job connection always goes direct: proxies are only for the muse.ai
-      // HTTP calls that add / wake an account (session, wake, token in bootstrap).
-      // wss:// URLs are not tied to the IP that requested the token.
+      // The job connection never uses the account / wake proxy (that one is only for
+      // the muse.ai HTTP calls that add / wake an account). It goes through the job
+      // proxy pool when one was picked, else direct. wss:// URLs are not tied to
+      // the IP that requested the token.
+      if (this.jobProxy) {
+        const { HttpsProxyAgent } = require('https-proxy-agent');
+        wsOptions.agent = new HttpsProxyAgent(this.jobProxy);
+      }
       this.ws = new WebSocket(this.wsUrl, wsOptions);
       const markAlive = () => { this.lastAliveAt = Date.now(); };
       this.ws.on('pong', markAlive);

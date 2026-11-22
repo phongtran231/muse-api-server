@@ -1195,14 +1195,23 @@
       <div class="modal-body">
         <div class="form-group">
           <label class="form-label" for="proxyPoolList">
-            <span>Proxies (one per line)</span>
+            <span>Add / wake proxies (one per line)</span>
             <span id="proxyPoolCount" style="font-size: 11px; color: var(--text-dim);"></span>
           </label>
           <textarea id="proxyPoolList" class="form-textarea font-mono" rows="8" placeholder="host:port:user:pass&#10;http://user:pass@host:port"></textarea>
-          <span style="font-size: 11px; color: var(--text-dim);">Accounts whose proxy is <b>pool</b> pick a random proxy from this list every time they (re)connect. Set an account's proxy to <span class="font-mono">pool</span> in Edit, or use the button below. Proxies are checked every 2 minutes; ones that fail twice (expired, unreachable) are skipped until they work again.</span>
+          <span style="font-size: 11px; color: var(--text-dim);">Used only for the muse.ai HTTP calls that add and wake accounts (session, VM wake, token). Accounts without their own proxy pick a random entry. Proxies are checked every 2 minutes; ones that fail twice (expired, unreachable) are skipped until they work again.</span>
         </div>
         <div id="proxyPoolStatus" style="font-size: 12px; margin-bottom: 8px;"></div>
-        <div id="proxyPoolAccounts" style="font-size: 12px; color: var(--text-muted);"></div>
+        <div id="proxyPoolAccounts" style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;"></div>
+        <div class="form-group">
+          <label class="form-label" for="jobProxyPoolList">
+            <span>Job proxies (one per line)</span>
+            <span id="jobProxyPoolCount" style="font-size: 11px; color: var(--text-dim);"></span>
+          </label>
+          <textarea id="jobProxyPoolList" class="form-textarea font-mono" rows="6" placeholder="host:port:user:pass&#10;http://user:pass@host:port"></textarea>
+          <span style="font-size: 11px; color: var(--text-dim);">Used for the WebSocket that runs jobs (image / video / chat). Every new connection picks a random entry. Leave empty to run jobs directly from this server.</span>
+        </div>
+        <div id="jobProxyPoolStatus" style="font-size: 12px; margin-bottom: 8px;"></div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" id="btnCheckProxyPool">Check now</button>
