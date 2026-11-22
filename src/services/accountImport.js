@@ -34,6 +34,10 @@ const PROXY_CHECK_TIMEOUT_MS = 15000;
 const NO_VM_RETRIES = 2;
 const NO_VM_RETRY_DELAY_MS = 10 * 60 * 1000;
 const NO_VM_RE = /VM info returned null|status: unavailable|VM is still starting/i;
+// Meta rate limits new connections per IP (HTTP 429). Not the cookie's fault: retry later.
+const RATE_LIMIT_RE = /response: 429|rate limiting new connections/i;
+const RATE_LIMIT_RETRIES = 12;
+const RATE_LIMIT_RETRY_DELAY_MS = 3 * 60 * 1000;
 
 let redis = null;
 let queue = null;
@@ -322,7 +326,7 @@ function withTimeout(promise, ms) {
 }
 
 async function processItem(job) {
-  const { batchId, index, name, email, cookie, proxy, validate, retries = 0 } = job.data;
+  const { batchId, index, name, email, cookie, proxy, validate, retries = 0, rateRetries = 0 } = job.data;
   const item = await getItem(batchId, index);
   if (!item || item.status === 'canceled') return;
   item.status = 'processing';
@@ -355,6 +359,18 @@ async function processItem(job) {
     }
   } catch (err) {
     const message = sanitize(err.message || String(err));
+    if (RATE_LIMIT_RE.test(message) && rateRetries < RATE_LIMIT_RETRIES) {
+      const jobId = `${batchId}-${index}-rl${rateRetries + 1}`;
+      await queue.add('import', { ...job.data, rateRetries: rateRetries + 1 }, { jobId, delay: RATE_LIMIT_RETRY_DELAY_MS, removeOnComplete: true, removeOnFail: true });
+      Object.assign(item, {
+        status: 'queued',
+        job_id: jobId,
+        error: `Meta is rate limiting new connections from this server (HTTP 429). Retrying in ${RATE_LIMIT_RETRY_DELAY_MS / 60000} min (retry ${rateRetries + 1}/${RATE_LIMIT_RETRIES}).`
+      });
+      log.info({ batch: batchId, index, name, retry: rateRetries + 1 }, 'Upstream rate limited; import retry scheduled');
+      await setItem(batchId, item);
+      return;
+    }
     if (NO_VM_RE.test(message) && retries < NO_VM_RETRIES) {
       const jobId = `${batchId}-${index}-r${retries + 1}`;
       await queue.add('import', { ...job.data, retries: retries + 1 }, { jobId, delay: NO_VM_RETRY_DELAY_MS, removeOnComplete: true, removeOnFail: true });

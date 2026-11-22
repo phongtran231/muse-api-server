@@ -69,6 +69,22 @@ function isVmUnavailable(err) {
   return /Unexpected server response: 50[234]/.test(err?.message || '');
 }
 
+// Meta answers the WSS handshake with 429 when one IP opens too many connections.
+// Every further attempt (watchdog, warm-up, import) extends the block, so all new
+// connections through that egress pause, with a growing delay.
+const RATE_LIMIT_BACKOFF_MIN_MS = 60 * 1000;
+const RATE_LIMIT_BACKOFF_MAX_MS = 10 * 60 * 1000;
+function isUpstreamRateLimited(err) {
+  return err?.code === 'UPSTREAM_RATE_LIMITED' || /Unexpected server response: 429/.test(err?.message || '');
+}
+/** Egress an account connects through; rate limits apply per IP. null = random pool proxy (not tracked). */
+function egressKey(doc) {
+  const proxy = doc?.proxy;
+  if (!proxy) return 'direct';
+  if (proxy === 'pool') return null;
+  return proxyLabel(proxy);
+}
+
 /** A reserved slot on an account. Must be released exactly once. */
 class Lease {
   constructor(pool, entry, capability, client) {
@@ -115,6 +131,7 @@ class AccountPool extends EventEmitter {
       video: config.pool.defaultConcurrency.video
     };
     this.warmingCount = 0;
+    this.upstreamBackoff = new Map(); // egressKey -> { until, ms }
   }
 
   // ---------------------------------------------------------------------------
@@ -302,7 +319,7 @@ class AccountPool extends EventEmitter {
     const now = Date.now();
     const candidates = [...this.entries.values()]
       .filter((e) => this._supports(e, capability) && this._isHealthy(e, now) && !this._isLive(e, now) && !this._isWarming(e, now)
-        && !e.connecting && !e.isRenewing && now - e.lastWarmupAt >= warmupRetryMs)
+        && !e.connecting && !e.isRenewing && now - e.lastWarmupAt >= warmupRetryMs && !this._rateLimitRemaining(e, now))
       .sort((a, b) => this._recentUseCount(a, capability, now) - this._recentUseCount(b, capability, now) || a.lastUsedAt - b.lastUsedAt)
       .slice(0, room);
     candidates.forEach((entry, i) => {
@@ -457,7 +474,8 @@ class AccountPool extends EventEmitter {
         this._releaseSlot(entry, capability);
         if (signal?.aborted) throw signal.reason;
         const apiError = classifyUpstreamError(err);
-        this._reportFailure(entry, apiError);
+        // An IP-wide 429 says nothing about this account: don't degrade it.
+        if (!isUpstreamRateLimited(err)) this._reportFailure(entry, apiError);
         lastError = apiError;
         log.warn({ account: entry.id, capability, code: apiError.code, err: sanitize(err.message) }, 'Account connection failed; failing over');
         if (preferredAccountId) break;
@@ -685,8 +703,35 @@ class AccountPool extends EventEmitter {
    * reconnects leave a sleeping VM alone instead of opening muse.ai every few
    * minutes for every account.
    */
+  /** Remaining pause (ms) for new upstream connections through this account's egress. */
+  _rateLimitRemaining(entry, now = Date.now()) {
+    const key = egressKey(entry.doc);
+    const state = key && this.upstreamBackoff.get(key);
+    return state ? Math.max(0, state.until - now) : 0;
+  }
+
+  _noteConnectOutcome(entry, err) {
+    const key = egressKey(entry.doc);
+    if (!key) return;
+    if (!err) {
+      this.upstreamBackoff.delete(key);
+      return;
+    }
+    if (!isUpstreamRateLimited(err) || err.code === 'UPSTREAM_RATE_LIMITED') return;
+    const prev = this.upstreamBackoff.get(key);
+    const ms = Math.min(RATE_LIMIT_BACKOFF_MAX_MS, prev ? prev.ms * 2 : RATE_LIMIT_BACKOFF_MIN_MS);
+    this.upstreamBackoff.set(key, { until: Date.now() + ms, ms });
+    log.warn({ egress: key, pauseSec: ms / 1000 }, 'Upstream rate limited new connections (HTTP 429); pausing new connections through this egress');
+  }
+
   _ensureClient(entry, { wake = false } = {}) {
     if (entry.client && entry.client.ws && entry.client.ws.readyState === 1) return Promise.resolve(entry.client);
+    const paused = !entry.connecting && this._rateLimitRemaining(entry);
+    if (paused) {
+      const err = new Error(`Upstream is rate limiting new connections from this server (HTTP 429). Retrying in ${Math.ceil(paused / 1000)}s.`);
+      err.code = 'UPSTREAM_RATE_LIMITED';
+      return Promise.reject(err);
+    }
     if (entry.connecting) {
       // A background connect may give up on a sleeping VM; a caller that needs the account then wakes it.
       return wake && !entry.connectingWake ? entry.connecting.catch(() => this._ensureClient(entry, { wake: true })) : entry.connecting;
@@ -695,7 +740,13 @@ class AccountPool extends EventEmitter {
       return Promise.reject(new ApiError(ErrorCodes.UPSTREAM_ERROR, { message: 'The account VM is asleep; it is woken when a job needs it.' }));
     }
     entry.connectingWake = wake;
-    entry.connecting = this._connect(entry, { wake }).finally(() => {
+    entry.connecting = this._connect(entry, { wake }).then((client) => {
+      this._noteConnectOutcome(entry, null);
+      return client;
+    }, (err) => {
+      this._noteConnectOutcome(entry, err);
+      throw err;
+    }).finally(() => {
       entry.connecting = null;
       entry.connectingWake = false;
     });
@@ -1067,6 +1118,7 @@ class AccountPool extends EventEmitter {
         continue;
       }
       if (entry.isRenewing) continue;
+      if (this._rateLimitRemaining(entry)) continue; // Meta is rate limiting this egress: don't extend the block
 
       entry.lastRenewAttempt = now;
       log.info({ account: entry.id, name: entry.doc.name, reason: { isExpiredOrDegraded, isWssExpiring, hasFailures, isDisconnected } }, 'Watchdog auto-recovering unusable account...');

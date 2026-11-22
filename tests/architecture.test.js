@@ -1047,3 +1047,20 @@ test('proxy "pool" resolves to a random pool entry; other values are unchanged',
   assert.equal(cred.resolveProxy(null), null);
   cred.setProxyPoolPicker(null);
 });
+
+test('an upstream 429 pauses new connections through that egress instead of retrying every account', async () => {
+  const { AccountPool } = isolated('src/services/pool.js', {
+    '../models': { CAPABILITIES: ['chat', 'image', 'video'], Account: { updateOne: async () => ({}) } }
+  });
+  const pool = new AccountPool();
+  let connects = 0;
+  pool._connect = async () => { connects++; throw new Error('Unexpected server response: 429'); };
+  const a = { id: 'a', doc: { proxy: null } };
+  const b = { id: 'b', doc: { proxy: null } };
+  const own = { id: 'c', doc: { proxy: 'http://10.1.2.3:8080' } };
+  await assert.rejects(pool._ensureClient(a, { wake: true }), /429/);
+  await assert.rejects(pool._ensureClient(b, { wake: true }), (err) => err.code === 'UPSTREAM_RATE_LIMITED');
+  assert.equal(connects, 1);
+  await assert.rejects(pool._ensureClient(own, { wake: true }), /429/);
+  assert.equal(connects, 2); // a different egress is not paused
+});
