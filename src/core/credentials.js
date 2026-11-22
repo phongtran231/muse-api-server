@@ -157,7 +157,8 @@ async function composeCredentialAsync(params = {}, existing = '') {
 
   try {
     const { fetchWssFromCookie } = require('./client');
-    const res = await fetchWssFromCookie(comp.value, params.proxy || null);
+    // Adding an account wakes its VM over HTTP (through the proxy, if any).
+    const res = await fetchWssFromCookie(comp.value, params.proxy || null, { wake: true });
     if (res && res.wsUrl) {
       return {
         value: res.hybrid,

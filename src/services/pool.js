@@ -77,6 +77,14 @@ const RATE_LIMIT_BACKOFF_MAX_MS = 10 * 60 * 1000;
 function isUpstreamRateLimited(err) {
   return err?.code === 'UPSTREAM_RATE_LIMITED' || /Unexpected server response: 429/.test(err?.message || '');
 }
+/**
+ * Proxy for the muse.ai HTTP calls that add / wake an account: its own proxy,
+ * else a random proxy-pool entry (null when the pool is empty). Jobs never use it.
+ */
+function wakeProxy(doc) {
+  return resolveProxy(doc?.proxy || 'pool');
+}
+
 /** WebSocket connections always go direct (proxies are only for add/wake HTTP calls), so one egress. */
 function egressKey() {
   return 'direct';
@@ -759,7 +767,7 @@ class AccountPool extends EventEmitter {
     // One proxy per connection: with proxy "pool" a random pool entry is picked here
     // for the muse.ai HTTP calls (token renewal / wake); the WebSocket always goes direct.
     // A renewal that ran just before (watchdog / keep-alive) already picked one: reuse it.
-    const proxy = entry.renewedProxy !== undefined ? entry.renewedProxy : resolveProxy(entry.doc.proxy);
+    const proxy = entry.renewedProxy !== undefined ? entry.renewedProxy : wakeProxy(entry.doc);
     entry.renewedProxy = undefined;
     const renewOptions = wake ? { wake: true, proxy } : { proxy };
     let credential = entry.doc.credential;
@@ -1015,7 +1023,7 @@ class AccountPool extends EventEmitter {
 
       let result;
       try {
-        const proxy = options.proxy !== undefined ? options.proxy : resolveProxy(entry.doc.proxy);
+        const proxy = options.proxy !== undefined ? options.proxy : wakeProxy(entry.doc);
         if (options.proxy === undefined) entry.renewedProxy = proxy; // the next _connect uses the same IP
         result = await fetchWssFromCookie(cred.cookie, proxy, { ...options, proxy });
       } catch (err) {
@@ -1228,7 +1236,7 @@ class AccountPool extends EventEmitter {
     }
     let result;
     try {
-      result = await fetchWssFromCookie(cred.cookie, resolveProxy(doc.proxy), options);
+      result = await fetchWssFromCookie(cred.cookie, wakeProxy(doc), options);
     } catch (err) {
       const apiError = classifyUpstreamError(err);
       throw new ApiError(ErrorCodes.CREDENTIAL_INVALID, { message: `Failed to regenerate the wss:// URL from the cookie: ${apiError.message}`, cause: err });
