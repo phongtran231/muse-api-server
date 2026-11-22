@@ -297,20 +297,35 @@ async function loadOverview() {
 // ---- Accounts Tab ----
 function formatCredits(n) {
   if (n === null || n === undefined) return '?';
+  if (n >= 1e9) return `${Math.round(n / 1e8) / 10}B`;
   if (n >= 1e6) return `${Math.round(n / 1e5) / 10}M`;
   if (n >= 1e3) return `${Math.round(n / 100) / 10}K`;
   return String(n);
 }
 
-/** One line per account: plan, weekly usage and reset, top-up credits. */
+// Meta reports top-up in credits; muse.ai shows tokens: 1 credit = 25 tokens
+// (a 1B-token invite reward reads topup_total 40,000,000).
+const TOKENS_PER_TOPUP_CREDIT = 25;
+
+/** Top-up as muse.ai shows it: tokens left and % used. */
+function topupText(q) {
+  if (q.topup_total == null) return 'top-up ?';
+  const left = (q.topup_balance || 0) * TOKENS_PER_TOPUP_CREDIT;
+  const total = q.topup_total * TOKENS_PER_TOPUP_CREDIT;
+  if (!total) return 'no top-up';
+  const used = Math.round((1 - (q.topup_balance || 0) / q.topup_total) * 100);
+  return `top-up ${formatCredits(left)} / ${formatCredits(total)} tokens (${used}% used)`;
+}
+
+/** One line per account: plan, weekly usage and reset, top-up tokens. */
 function quotaHtml(q) {
   if (!q) return '<div style="font-size: 11px; color: var(--text-dim); margin-top: 3px;">Quota: not read yet</div>';
   const pct = q.usage_percent ?? 0;
   const color = q.blocked ? '#FB7185' : pct >= 80 ? '#F59E0B' : '#34D399';
   const resets = q.resets_at ? new Date(q.resets_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '?';
   const title = [q.subtitle, `Weekly ${pct}% (${q.usage_status || '?'})`, q.monthly_usage_percent !== null ? `Monthly ${q.monthly_usage_percent}% (${q.monthly_status || '?'})` : null,
-    `Top-up ${formatCredits(q.topup_balance)} / ${formatCredits(q.topup_total)} (${q.topup_status || '?'})`, `Read ${timeAgo(q.fetched_at)}`].filter(Boolean).join('\n');
-  return `<div style="font-size: 11px; margin-top: 3px; color: ${color};" title="${escapeHtml(title)}">${q.blocked ? 'OUT OF CREDITS · ' : ''}${escapeHtml(q.plan || '?')} · ${pct}% week · resets ${escapeHtml(resets)} · top-up ${formatCredits(q.topup_balance)}</div>`;
+    `Top-up ${topupText(q)} (${q.topup_status || '?'}) · raw credits ${formatCredits(q.topup_balance)} / ${formatCredits(q.topup_total)}`, `Read ${timeAgo(q.fetched_at)}`].filter(Boolean).join('\n');
+  return `<div style="font-size: 11px; margin-top: 3px; color: ${color};" title="${escapeHtml(title)}">${q.blocked ? 'OUT OF CREDITS · ' : ''}${escapeHtml(q.plan || '?')} · ${pct}% week · resets ${escapeHtml(resets)} · ${escapeHtml(topupText(q))}</div>`;
 }
 
 /** Capabilities paused on an account (daily cap reached / not allowed); they come back automatically. */
