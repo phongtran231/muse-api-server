@@ -3,7 +3,7 @@ name: Deploy
 # Deploys main to both hosts. Each SSH key is restricted on its server to a forced
 # command (git pull + scripts/deploy-vps.sh), so it cannot open a shell:
 #   deploy       -> VPS_*  (103.116.39.111, /usr/local/bin/muse-deploy)
-#   deploy-inmu  -> INMU_* (198.58.105.211, inmu.vn91.net, /usr/local/bin/inmu-deploy)
+#   deploy-inmu  -> INMU_* (173.208.243.163 as administrator, inmu.vn91.net, ~/bin/inmu-deploy)
 on:
   push:
     branches: [main]
@@ -55,4 +55,4 @@ jobs:
         env:
           INMU_HOST: ${{ secrets.INMU_HOST }}
           INMU_USER: ${{ secrets.INMU_USER }}
-        run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes "$INMU_USER@$INMU_HOST" /usr/local/bin/inmu-deploy
+        run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes "$INMU_USER@$INMU_HOST" deploy
