@@ -173,7 +173,7 @@ const config = Object.freeze({
     adminApiKey: str('ADMIN_API_KEY', undefined, { required: true, minLength: 32 }),
     // Secret used to sign media URLs (HMAC-SHA256).
     signingSecret: str('SIGNING_SECRET', undefined, { required: true, minLength: 32 }),
-    signedUrlTtlSec: int('SIGNED_URL_TTL_SEC', 86400, { min: 60, max: 30 * 86400 }),
+    signedUrlTtlSec: int('SIGNED_URL_TTL_SEC', 7200, { min: 60, max: 30 * 86400 }),
     metricsToken: str('METRICS_TOKEN', '')
   }),
 
@@ -185,7 +185,7 @@ const config = Object.freeze({
 
   storage: Object.freeze({
     dir: path.resolve(ROOT_DIR, str('STORAGE_DIR', './storage')),
-    retentionHours: int('FILE_RETENTION_HOURS', 168, { min: 1, max: 24 * 365 }),
+    retentionHours: int('FILE_RETENTION_HOURS', 2, { min: 1, max: 24 * 365 }),
     maxImageBytes: int('MAX_IMAGE_MB', 20, { min: 1, max: 200 }) * 1024 * 1024,
     maxVideoBytes: int('MAX_VIDEO_MB', 100, { min: 1, max: 2000 }) * 1024 * 1024,
     allowRemoteUrls: bool('ALLOW_REMOTE_MEDIA_URLS', true),
