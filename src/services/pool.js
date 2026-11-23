@@ -1240,8 +1240,11 @@ class AccountPool extends EventEmitter {
 
   _getLoadedEntry(accountId) {
     const entry = this.entries.get(accountId);
-    if (!entry || !entry.doc.enabled) throw new ApiError(ErrorCodes.ACCOUNT_NOT_LOADED);
-    return entry;
+    if (entry && entry.doc.enabled) return entry;
+    const message = entry
+      ? 'This account is disabled. Enable it to test, refresh or use it.'
+      : `This account is not in this node's pool (its group differs from ACCOUNT_GROUP "${config.pool.group}").`;
+    throw new ApiError(ErrorCodes.ACCOUNT_NOT_LOADED, { message });
   }
 
   /** Verifies connectivity with a real round-trip. Never throws for upstream errors. */
