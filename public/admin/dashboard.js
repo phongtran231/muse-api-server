@@ -367,66 +367,145 @@ document.getElementById('refreshQuotasBtn')?.addEventListener('click', async () 
   }
 });
 
+let accountsCache = [];
+let accountsVirtualizer = null;
+
+function renderAccountRow(a, index) {
+  const isConnected = a.live?.connected;
+  const isRenewing = a.live?.is_renewing;
+  let statusBadge = `<span class="badge badge-${a.status}"><span class="dot-pulse"></span>${a.status}</span>`;
+  if (isRenewing) {
+    statusBadge = `<span class="badge" style="background: rgba(245, 158, 11, 0.18); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3);"><span class="dot-pulse" style="background: #F59E0B;"></span>Auto-Renewing WSS</span>`;
+  }
+  const connBadge = a.live?.warming
+    ? `<span style="color: #F59E0B; font-weight: 600;" title="Being warmed up; takes work once ready">WARMING${a.live.ready_at ? ` · ready ${new Date(a.live.ready_at).toLocaleTimeString()}` : ''}</span>`
+    : isConnected
+    ? '<span style="color: #34D399; font-weight: 600;">CONNECTED</span>'
+    : (isRenewing ? '<span style="color: #F59E0B; font-weight: 600;">RENEWING</span>'
+      : (a.live?.sleeping ? '<span style="color: #818CF8; font-weight: 600;" title="Meta suspended the idle VM; it is woken when a job needs this account">SLEEPING</span>' : '<span style="color: var(--text-dim);">STANDBY</span>'));
+
+  const caps = [];
+  if (a.capabilities?.chat) caps.push('<span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #818CF8;">Chat</span>');
+  if (a.capabilities?.image) caps.push('<span class="badge" style="background: rgba(6, 182, 212, 0.15); color: #22D3EE;">Img</span>');
+  if (a.capabilities?.video) caps.push('<span class="badge" style="background: rgba(244, 114, 182, 0.15); color: #F472B6;">Vid</span>');
+
+  return `
+    <tr data-index="${index}">
+      <td>
+        <div class="cell-primary">${escapeHtml(a.name)}</div>
+        <div class="font-mono" style="font-size: 11px; color: var(--text-dim);">${escapeHtml(a.id)}</div>
+        ${quotaHtml(a.quota)}
+        ${capabilityLimitsHtml(a.capability_limits)}
+      </td>
+      <td><span class="badge badge-offline">${a.credential_type || 'cookie'}</span></td>
+      <td>${statusBadge}</td>
+      <td>${connBadge}</td>
+      <td style="font-size: 12px;">${formatDate(a.wss_expires_at)}</td>
+      <td>${caps.join(' ')}</td>
+      <td style="font-size: 12px; white-space: nowrap;">
+        <span style="color: #F472B6; font-weight: 700;" title="Video Slots">🎬 ${a.concurrency?.video ?? 'Auto'}</span> | 
+        <span style="color: #22D3EE; font-weight: 700;" title="Image Slots">🖼️ ${a.concurrency?.image ?? 'Auto'}</span> | 
+        <span style="color: #818CF8; font-weight: 600;" title="Chat Slots">💬 ${a.concurrency?.chat ?? 'Auto'}</span>
+        ${a.live?.uses_24h ? `<div style="font-size: 11px; color: var(--text-dim); margin-top: 3px;" title="Jobs started on this account in the last 24h; new jobs go to the least used accounts">24h: ${a.live.uses_24h.video} video · ${a.live.uses_24h.image} img · ${a.live.uses_24h.chat} chat</div>` : ''}
+      </td>
+      <td>
+        <div class="actions-cell">
+          <button class="btn btn-primary btn-sm" onclick="openEditAccountModal('${escapeJsAttr(a.id)}')" title="Configure account & concurrency" style="padding: 4px 8px; font-weight: 600;">Edit</button>
+          <button class="btn btn-secondary btn-sm" onclick="testAccount('${escapeJsAttr(a.id)}')" title="Test Connection">Test</button>
+          <button class="btn btn-secondary btn-sm" onclick="refreshQuota('${escapeJsAttr(a.id)}')" title="Read this account's credit / quota (wakes the VM if needed)">Quota</button>
+          <button class="btn btn-secondary btn-sm" onclick="refreshAccount('${escapeJsAttr(a.id)}')" title="Renew WSS from Cookie">Renew</button>
+          <button class="btn btn-secondary btn-sm" onclick="cleanupSessions('${escapeJsAttr(a.id)}')" title="Clean Threads">Clean</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteAccount('${escapeJsAttr(a.id)}', '${escapeJsAttr(a.name)}')" title="Delete Account">Del</button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function ensureAccountsVirtualizer() {
+  const lib = window.TanStackVirtualCore;
+  const scrollEl = document.getElementById('accountsTableScroll');
+  if (!lib?.Virtualizer || !scrollEl) return null;
+  if (accountsVirtualizer) return accountsVirtualizer;
+
+  accountsVirtualizer = new lib.Virtualizer({
+    count: accountsCache.length,
+    getScrollElement: () => document.getElementById('accountsTableScroll'),
+    estimateSize: () => 86,
+    overscan: 6,
+    observeElementRect: lib.observeElementRect,
+    observeElementOffset: lib.observeElementOffset,
+    scrollToFn: lib.elementScroll,
+    onChange: () => {
+      renderAccountsVirtualRows();
+    }
+  });
+  accountsVirtualizer._didMount();
+  return accountsVirtualizer;
+}
+
+function renderAccountsVirtualRows() {
+  const tbody = document.getElementById('accountsTableBody');
+  if (!tbody) return;
+  if (!accountsCache.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: var(--text-dim);">No accounts onboarded yet. Click "Onboard Account" to add one.</td></tr>';
+    return;
+  }
+
+  const virtualizer = ensureAccountsVirtualizer();
+  if (!virtualizer) {
+    tbody.innerHTML = accountsCache.map((a, i) => renderAccountRow(a, i)).join('');
+    return;
+  }
+
+  const virtualItems = virtualizer.getVirtualItems();
+  if (!virtualItems.length) {
+    tbody.innerHTML = accountsCache.slice(0, 20).map((a, i) => renderAccountRow(a, i)).join('');
+    return;
+  }
+
+  const totalSize = virtualizer.getTotalSize();
+  const paddingTop = virtualItems[0].start;
+  const paddingBottom = Math.max(0, totalSize - virtualItems[virtualItems.length - 1].end);
+
+  const topSpacer = paddingTop > 0
+    ? `<tr class="virtual-spacer" aria-hidden="true"><td colspan="8" style="height: ${paddingTop}px; padding: 0; border: none;"></td></tr>`
+    : '';
+  const bottomSpacer = paddingBottom > 0
+    ? `<tr class="virtual-spacer" aria-hidden="true"><td colspan="8" style="height: ${paddingBottom}px; padding: 0; border: none;"></td></tr>`
+    : '';
+
+  tbody.innerHTML = topSpacer + virtualItems.map((vItem) => renderAccountRow(accountsCache[vItem.index], vItem.index)).join('') + bottomSpacer;
+
+  tbody.querySelectorAll('tr[data-index]').forEach((row) => {
+    virtualizer.measureElement(row);
+  });
+}
+
+window.addEventListener('tanstack-virtual-ready', () => {
+  if (accountsCache.length) {
+    const v = ensureAccountsVirtualizer();
+    if (v) {
+      v.setOptions({ ...v.options, count: accountsCache.length });
+      v._willUpdate();
+      renderAccountsVirtualRows();
+    }
+  }
+});
+
 async function loadAccounts() {
   try {
     const list = await api('/accounts');
-    const tbody = document.getElementById('accountsTableBody');
-    if (!list || list.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: var(--text-dim);">No accounts onboarded yet. Click "Onboard Account" to add one.</td></tr>';
-      return;
+    accountsCache = Array.isArray(list) ? list : [];
+    const countBadge = document.getElementById('accountsCountBadge');
+    if (countBadge) countBadge.textContent = `${accountsCache.length} accounts`;
+
+    const v = ensureAccountsVirtualizer();
+    if (v) {
+      v.setOptions({ ...v.options, count: accountsCache.length });
+      v._willUpdate();
     }
-
-    tbody.innerHTML = list.map((a) => {
-      const isConnected = a.live?.connected;
-      const isRenewing = a.live?.is_renewing;
-      let statusBadge = `<span class="badge badge-${a.status}"><span class="dot-pulse"></span>${a.status}</span>`;
-      if (isRenewing) {
-        statusBadge = `<span class="badge" style="background: rgba(245, 158, 11, 0.18); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3);"><span class="dot-pulse" style="background: #F59E0B;"></span>Auto-Renewing WSS</span>`;
-      }
-      const connBadge = a.live?.warming
-        ? `<span style="color: #F59E0B; font-weight: 600;" title="Being warmed up; takes work once ready">WARMING${a.live.ready_at ? ` · ready ${new Date(a.live.ready_at).toLocaleTimeString()}` : ''}</span>`
-        : isConnected
-        ? '<span style="color: #34D399; font-weight: 600;">CONNECTED</span>'
-        : (isRenewing ? '<span style="color: #F59E0B; font-weight: 600;">RENEWING</span>'
-          : (a.live?.sleeping ? '<span style="color: #818CF8; font-weight: 600;" title="Meta suspended the idle VM; it is woken when a job needs this account">SLEEPING</span>' : '<span style="color: var(--text-dim);">STANDBY</span>'));
-
-      const caps = [];
-      if (a.capabilities?.chat) caps.push('<span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #818CF8;">Chat</span>');
-      if (a.capabilities?.image) caps.push('<span class="badge" style="background: rgba(6, 182, 212, 0.15); color: #22D3EE;">Img</span>');
-      if (a.capabilities?.video) caps.push('<span class="badge" style="background: rgba(244, 114, 182, 0.15); color: #F472B6;">Vid</span>');
-
-      return `
-        <tr>
-          <td>
-            <div class="cell-primary">${escapeHtml(a.name)}</div>
-            <div class="font-mono" style="font-size: 11px; color: var(--text-dim);">${escapeHtml(a.id)}</div>
-            ${quotaHtml(a.quota)}
-            ${capabilityLimitsHtml(a.capability_limits)}
-          </td>
-          <td><span class="badge badge-offline">${a.credential_type || 'cookie'}</span></td>
-          <td>${statusBadge}</td>
-          <td>${connBadge}</td>
-          <td style="font-size: 12px;">${formatDate(a.wss_expires_at)}</td>
-          <td>${caps.join(' ')}</td>
-          <td style="font-size: 12px; white-space: nowrap;">
-            <span style="color: #F472B6; font-weight: 700;" title="Video Slots">🎬 ${a.concurrency?.video ?? 'Auto'}</span> | 
-            <span style="color: #22D3EE; font-weight: 700;" title="Image Slots">🖼️ ${a.concurrency?.image ?? 'Auto'}</span> | 
-            <span style="color: #818CF8; font-weight: 600;" title="Chat Slots">💬 ${a.concurrency?.chat ?? 'Auto'}</span>
-            ${a.live?.uses_24h ? `<div style="font-size: 11px; color: var(--text-dim); margin-top: 3px;" title="Jobs started on this account in the last 24h; new jobs go to the least used accounts">24h: ${a.live.uses_24h.video} video · ${a.live.uses_24h.image} img · ${a.live.uses_24h.chat} chat</div>` : ''}
-          </td>
-          <td>
-            <div class="actions-cell">
-              <button class="btn btn-primary btn-sm" onclick="openEditAccountModal('${escapeJsAttr(a.id)}')" title="Configure account & concurrency" style="padding: 4px 8px; font-weight: 600;">Edit</button>
-              <button class="btn btn-secondary btn-sm" onclick="testAccount('${escapeJsAttr(a.id)}')" title="Test Connection">Test</button>
-              <button class="btn btn-secondary btn-sm" onclick="refreshQuota('${escapeJsAttr(a.id)}')" title="Read this account's credit / quota (wakes the VM if needed)">Quota</button>
-              <button class="btn btn-secondary btn-sm" onclick="refreshAccount('${escapeJsAttr(a.id)}')" title="Renew WSS from Cookie">Renew</button>
-              <button class="btn btn-secondary btn-sm" onclick="cleanupSessions('${escapeJsAttr(a.id)}')" title="Clean Threads">Clean</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteAccount('${escapeJsAttr(a.id)}', '${escapeJsAttr(a.name)}')" title="Delete Account">Del</button>
-            </div>
-          </td>
-        </tr>
-      `;
-    }).join('');
+    renderAccountsVirtualRows();
 
     loadSystemConcurrency();
 

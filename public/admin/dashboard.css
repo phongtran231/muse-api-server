@@ -620,6 +620,20 @@ h1, h2, h3, h4, h5 {
   overflow-x: auto;
 }
 
+.accounts-virtual-scroll {
+  max-height: 620px;
+  overflow-y: auto;
+  position: relative;
+}
+
+.accounts-virtual-scroll table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
