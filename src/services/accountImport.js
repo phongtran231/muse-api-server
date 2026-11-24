@@ -14,7 +14,7 @@
 
 const config = require('../config');
 const { Account } = require('../models');
-const { normalizeProxy, POOL_PROXY } = require('../core/credentials');
+const { normalizeProxy, resolveProxy, POOL_PROXY } = require('../core/credentials');
 const proxyPool = require('./proxyPool');
 const { logger, sanitize } = require('../logger');
 const { generateId } = require('../utils/crypto');
@@ -29,6 +29,9 @@ const BATCHES_KEY = 'muse:import:batches';
 const SEQ_KEY = (prefix) => `muse:import:seq:${prefix}`;
 const LIST_LIMIT = 20;
 const PROXY_CHECK_TIMEOUT_MS = 15000;
+const REDEEM_TIMEOUT_MS = 15000;
+const REDEEM_UNSUPPORTED_RE = /already[_ ]redeemed|ineligible|not eligible|expired|used_up|limit reached/i;
+const REDEEM_ERROR_STATUSES = new Set(['error', 'already_redeemed', 'ineligible', 'expired', 'invalid']);
 // Meta answers /api/session with status "unavailable" (no VM) for some fresh
 // accounts; provisioning can take a while, so such items are retried later.
 const NO_VM_RETRIES = 2;
@@ -48,12 +51,14 @@ let worker = null;
 // ---------------------------------------------------------------------------
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const REFERRAL_CODE_RE = /^[A-Z0-9_-]{3,32}$/;
 
 /**
  * One account per line: either a bare cookie, or "|"-separated fields as sold
  * by account shops ("email|code|password|cookie|"). Only the field holding
- * hatch_sess= is used as the cookie and an email field is kept as a label;
- * every other field (passwords, 2FA codes) is dropped and never stored.
+ * hatch_sess= is used as the cookie, an email field is kept as a label, and
+ * the optional referral code in field 2 is extracted for HTTP invite-code
+ * chaining; passwords are dropped and never stored.
  * Lines without hatch_sess= are reported as invalid.
  */
 function parseCookieLines(text) {
@@ -62,18 +67,142 @@ function parseCookieLines(text) {
   String(text || '').split(/\r?\n/).forEach((raw, i) => {
     const line = raw.trim();
     if (!line) return;
-    const fields = line.split('|').map((f) => f.trim()).filter(Boolean);
-    let cookie = fields.find((f) => /hatch_sess=/.test(f));
-    if (!cookie) {
+    const rawFields = line.split('|').map((f) => f.trim());
+    const cookieIdx = rawFields.findIndex((f) => /hatch_sess=/.test(f));
+    if (cookieIdx === -1) {
       invalid.push(i + 1);
       return;
     }
+    let cookie = rawFields[cookieIdx];
     if (/^cookie:/i.test(cookie)) cookie = cookie.slice(7).trim();
-    const email = fields.find((f) => EMAIL_RE.test(f)) || null;
-    cookies.push({ line: i + 1, cookie, email });
+    const email = rawFields.find((f) => EMAIL_RE.test(f)) || null;
+    let ownCode = null;
+    if (cookieIdx >= 2 && rawFields[1] && !EMAIL_RE.test(rawFields[1]) && !rawFields[1].includes('=')) {
+      const candidate = rawFields[1].toUpperCase();
+      if (REFERRAL_CODE_RE.test(candidate)) ownCode = candidate;
+    }
+    cookies.push({ line: i + 1, cookie, email, ownCode });
   });
   return { cookies, invalid };
 }
+
+/**
+ * Computes the referral code each account should redeem with.
+ * When `initialCode` is omitted, the last account's own code is used as the
+ * initial code so account 1 redeems with account N's code, account 2 with
+ * account 1's code, ..., and account N with account (N-1)'s code.
+ */
+function resolveReferralChain(cookies, { redeem = false, initialCode = '' } = {}) {
+  if (!redeem) return { initialCode: null, codes: Array(cookies.length).fill(null) };
+  const explicit = String(initialCode || '').trim().toUpperCase();
+  const lastWithCode = [...cookies].reverse().find((c) => c.ownCode);
+  const resolvedInitial = explicit || (lastWithCode ? lastWithCode.ownCode : null);
+  let current = resolvedInitial;
+  const codes = cookies.map((c) => {
+    const redeemWith = (current && current !== c.ownCode) ? current : null;
+    if (c.ownCode) current = c.ownCode;
+    return redeemWith;
+  });
+  return { initialCode: resolvedInitial, codes };
+}
+
+function mergeSetCookies(cookieStr, setCookieHeaders) {
+  if (!Array.isArray(setCookieHeaders) || !setCookieHeaders.length) return cookieStr;
+  const jar = new Map();
+  for (const part of String(cookieStr || '').split(';')) {
+    const idx = part.indexOf('=');
+    if (idx > 0) {
+      const k = part.slice(0, idx).trim();
+      const v = part.slice(idx + 1).trim();
+      if (k) jar.set(k, v);
+    }
+  }
+  for (const raw of setCookieHeaders) {
+    const [kv, ...attrs] = String(raw).split(';');
+    const idx = kv.indexOf('=');
+    if (idx <= 0) continue;
+    const k = kv.slice(0, idx).trim();
+    const v = kv.slice(idx + 1).trim();
+    if (!v || attrs.some((a) => /max-age\s*=\s*0\b/i.test(a))) continue;
+    jar.set(k, v);
+  }
+  return Array.from(jar.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+function parseRedeemResponse(status, data) {
+  const resData = data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  if (status >= 200 && status < 300) {
+    if (!resData) {
+      return { ok: false, status: 'failed', error: 'Muse did not return a JSON redeem result.' };
+    }
+    const isError = Boolean(
+      resData.error ||
+      resData.errors ||
+      resData.success === false ||
+      resData.status === 'error' ||
+      REDEEM_ERROR_STATUSES.has(resData.redemptionStatus)
+    );
+    if (!isError) {
+      return { ok: true, status: 'confirmed', message: resData.message || resData.status || resData.redemptionStatus || 'Redemption successful' };
+    }
+  }
+
+  let errMsg = '';
+  if (resData) {
+    if (typeof resData.error === 'string') errMsg = resData.error;
+    else if (resData.error?.message) errMsg = resData.error.message;
+    else if (resData.message) errMsg = resData.message;
+    else if (resData.redemptionStatus) errMsg = `Redemption status: ${resData.redemptionStatus}`;
+    else errMsg = JSON.stringify(resData);
+  } else if (typeof data === 'string' && data.trim()) {
+    errMsg = data.trim().slice(0, 200);
+  } else {
+    errMsg = `HTTP ${status}`;
+  }
+
+  if (status === 401 || status === 403) {
+    return { ok: false, status: 'failed', error: `Session unauthorized or expired (HTTP ${status}): ${errMsg}` };
+  }
+
+  const checkText = `${errMsg} ${resData?.redemptionStatus || ''}`;
+  if (REDEEM_UNSUPPORTED_RE.test(checkText)) {
+    return { ok: false, status: 'unsupported', error: errMsg || 'Account ineligible or already redeemed' };
+  }
+  return { ok: false, status: 'failed', error: errMsg || `Redemption failed with HTTP ${status}` };
+}
+
+async function redeemInviteCode(cookieStr, code, proxy = null) {
+  const axios = require('axios');
+  const { HttpsProxyAgent } = require('https-proxy-agent');
+  const effectiveProxy = resolveProxy(proxy);
+  const httpsAgent = effectiveProxy ? new HttpsProxyAgent(effectiveProxy) : undefined;
+  try {
+    const res = await axios.post(
+      'https://muse.ai/api/hatch/invite-code/redeem',
+      { code, supportsRedemptionStatus: true },
+      {
+        headers: {
+          cookie: cookieStr,
+          'content-type': 'application/json',
+          origin: 'https://muse.ai',
+          referer: 'https://muse.ai/'
+        },
+        httpsAgent,
+        proxy: false,
+        validateStatus: () => true,
+        signal: AbortSignal.timeout(REDEEM_TIMEOUT_MS)
+      }
+    );
+    const refreshedCookie = mergeSetCookies(cookieStr, res.headers?.['set-cookie']);
+    return { ...parseRedeemResponse(res.status, res.data), refreshedCookie };
+  } catch (err) {
+    const msg = err.code === 'ERR_CANCELED'
+      ? `Redeem timed out after ${REDEEM_TIMEOUT_MS / 1000}s`
+      : (err.message || String(err));
+    return { ok: false, status: 'failed', error: msg };
+  }
+}
+
 
 /** One proxy per line, any format accepted by normalizeProxy; duplicates removed. */
 function parseProxyLines(text) {
@@ -233,23 +362,41 @@ async function createBatch(input) {
   }
   const prefix = String(input.prefix || 'acc').trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'acc';
   const proxies = parseProxyLines(input.proxies);
+  const redeem = Boolean(input.redeem);
+  const chain = resolveReferralChain(cookies, { redeem, initialCode: input.initialCode });
 
   const accounts = await existingAccounts();
   const knownSessions = existingSessionIds(accounts);
   const items = [];
   const toQueue = [];
-  for (const { line, cookie, email } of cookies) {
+  cookies.forEach(({ line, cookie, email, ownCode }, idx) => {
     const sid = sessionIdOf(cookie);
-    const item = { index: items.length, line, email, session: sid ? sid.slice(0, 8) : null, name: null, proxy: null, status: 'queued', error: null, account_id: null };
+    const redeemCode = chain.codes[idx];
+    const item = {
+      index: items.length,
+      line,
+      email,
+      own_code: ownCode || null,
+      redeemed_with: redeemCode || null,
+      redeem_status: redeem ? (redeemCode ? 'pending' : 'skipped') : null,
+      redeem_error: null,
+      session: sid ? sid.slice(0, 8) : null,
+      name: null,
+      proxy: null,
+      status: 'queued',
+      error: null,
+      account_id: null
+    };
     if (sid && knownSessions.has(sid)) {
       item.status = 'skipped';
+      if (redeem) item.redeem_status = 'skipped';
       item.error = 'Duplicate: this session (hatch_sess) is already an account or appears earlier in the batch.';
     } else {
       if (sid) knownSessions.add(sid);
-      toQueue.push({ item, cookie });
+      toQueue.push({ item, cookie, redeemCode });
     }
     items.push(item);
-  }
+  });
 
   const proxyCounts = new Map();
   for (const a of accounts) {
@@ -275,6 +422,8 @@ async function createBatch(input) {
     total: items.length,
     invalid_lines: invalid,
     validate: input.validate !== false,
+    redeem,
+    initial_code: chain.initialCode || null,
     interval_sec: config.accountImport.intervalMs / 1000,
     proxies: proxies.map(proxyHost)
   };
@@ -287,13 +436,13 @@ async function createBatch(input) {
     .zadd(BATCHES_KEY, Date.now(), batchId)
     .exec();
 
-  await queue.addBulk(toQueue.map(({ item, cookie, proxy }) => ({
+  await queue.addBulk(toQueue.map(({ item, cookie, proxy, redeemCode }) => ({
     name: 'import',
-    data: { batchId, index: item.index, name: item.name, email: item.email, cookie, proxy, validate: meta.validate },
+    data: { batchId, index: item.index, name: item.name, email: item.email, cookie, proxy, validate: meta.validate, redeemCode },
     // Cookies must not linger in Redis once processed.
     opts: { jobId: `${batchId}-${item.index}`, removeOnComplete: true, removeOnFail: true }
   })));
-  log.info({ batch: batchId, queued: toQueue.length, skipped: items.length - toQueue.length, invalid: invalid.length }, 'Account import batch queued');
+  log.info({ batch: batchId, queued: toQueue.length, skipped: items.length - toQueue.length, invalid: invalid.length, redeem, initialCode: chain.initialCode }, 'Account import batch queued');
   return getBatch(batchId);
 }
 
@@ -326,7 +475,7 @@ function withTimeout(promise, ms) {
 }
 
 async function processItem(job) {
-  const { batchId, index, name, email, cookie, proxy, validate, retries = 0, rateRetries = 0 } = job.data;
+  const { batchId, index, name, email, cookie, proxy, validate, redeemCode, retries = 0, rateRetries = 0 } = job.data;
   const item = await getItem(batchId, index);
   if (!item || item.status === 'canceled') return;
   item.status = 'processing';
@@ -340,7 +489,17 @@ async function processItem(job) {
       Object.assign(item, { status: 'skipped', error: 'Duplicate: this session (hatch_sess) is already an account.' });
     } else {
       await checkProxy(proxy);
-      const onboarding = onboardAccount({ name, email, cookie, proxy, validate });
+      let activeCookie = cookie;
+      if (redeemCode && item.redeem_status === 'pending') {
+        const r = await redeemInviteCode(activeCookie, redeemCode, proxy);
+        item.redeem_status = r.status;
+        item.redeem_error = r.error ? sanitize(r.error).slice(0, 300) : null;
+        if (r.refreshedCookie) activeCookie = r.refreshedCookie;
+        await setItem(batchId, item);
+        if (r.ok) log.info({ batch: batchId, index, name, code: redeemCode }, 'Redeemed invite code via HTTP');
+        else log.warn({ batch: batchId, index, name, code: redeemCode, status: r.status, err: item.redeem_error }, 'Invite code redeem did not confirm');
+      }
+      const onboarding = onboardAccount({ name, email, cookie: activeCookie, proxy, validate });
       try {
         const { account, test } = await withTimeout(onboarding, config.accountImport.itemTimeoutMs);
         Object.assign(item, { status: 'done', error: null, account_id: account._id, latency_ms: test?.latency_ms ?? null });
@@ -448,6 +607,8 @@ module.exports = {
   cancelBatch,
   // exported for tests
   parseCookieLines,
+  resolveReferralChain,
+  parseRedeemResponse,
   parseProxyLines,
   assignProxies,
   maxNameNumber,

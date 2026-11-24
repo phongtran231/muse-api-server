@@ -1235,11 +1235,18 @@
           Bulk import needs Redis. Set REDIS_URL and restart the server.
         </div>
         <div class="form-group">
+          <label class="form-label" for="bulkFile">
+            <span>Upload .txt file (optional, format: email|code|password|cookie)</span>
+            <span id="bulkFileName" style="font-size: 11px; color: var(--text-dim);"></span>
+          </label>
+          <input type="file" id="bulkFile" accept=".txt,text/plain" class="form-input" style="padding: 6px 10px;">
+        </div>
+        <div class="form-group">
           <label class="form-label" for="bulkCookies">
-            <span>Cookies (one per line: a cookie, or email|...|cookie|)</span>
+            <span>Cookies (one per line: a cookie, or email|code|password|cookie|)</span>
             <span id="bulkCookieCount" style="font-size: 11px; color: var(--text-dim);">0 cookies</span>
           </label>
-          <textarea id="bulkCookies" class="form-textarea font-mono" rows="8" placeholder="datr=...; hatch_sess=...; ...&#10;datr=...; hatch_sess=...; ..."></textarea>
+          <textarea id="bulkCookies" class="form-textarea font-mono" rows="8" placeholder="email@example.com|CODE123|password|datr=...; hatch_sess=...; ...&#10;datr=...; hatch_sess=...; ..."></textarea>
           <span style="font-size: 11px; color: var(--text-dim);">Accounts are created one at a time, a few seconds apart. Cookies already used by an account are skipped.</span>
         </div>
         <div class="form-group">
@@ -1247,7 +1254,7 @@
           <textarea id="bulkProxies" class="form-textarea font-mono" rows="3" placeholder="host:port:user:pass&#10;http://user:pass@host:port"></textarea>
           <span style="font-size: 11px; color: var(--text-dim);">Each new account gets the proxy that currently has the fewest accounts. Leave empty to use the Proxy Pool (random proxy per connection).</span>
         </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; margin-bottom: 12px;">
           <div class="form-group" style="margin-bottom: 0;">
             <label class="form-label" for="bulkPrefix">Account name prefix</label>
             <input type="text" id="bulkPrefix" class="form-input" value="acc" maxlength="40">
@@ -1259,6 +1266,19 @@
             </label>
           </div>
         </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px;">
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label class="form-checkbox-label">
+              <input type="checkbox" id="bulkRedeem" class="form-checkbox" checked>
+              <span>Redeem referral chain via HTTP</span>
+            </label>
+            <span id="bulkChainHint" style="font-size: 11px; color: var(--text-dim);">Auto-uses the last account's code as initial code.</span>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="bulkInitialCode">Initial code override (optional)</label>
+            <input type="text" id="bulkInitialCode" class="form-input font-mono" placeholder="Auto (last account)" maxlength="32" style="text-transform: uppercase;">
+          </div>
+        </div>
 
         <div id="bulkImportProgress" style="display: none; margin-top: 16px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
@@ -1268,7 +1288,7 @@
           <div id="bulkImportCounts" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;"></div>
           <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
             <table>
-              <thead><tr><th>#</th><th>Line</th><th>Email / Session</th><th>Name</th><th>Proxy</th><th>Status</th><th>Detail</th></tr></thead>
+              <thead><tr><th>#</th><th>Line</th><th>Email / Session</th><th>Own Code</th><th>Redeem</th><th>Name</th><th>Proxy</th><th>Status</th><th>Detail</th></tr></thead>
               <tbody id="bulkImportItems"></tbody>
             </table>
           </div>

@@ -1023,14 +1023,36 @@ test('bulk import parses cookies, spreads proxies by load and continues name num
 });
 
 test('bulk import reads "email|code|password|cookie|" lines without keeping the password', () => {
-  const { parseCookieLines } = require('../src/services/accountImport');
+  const { parseCookieLines, resolveReferralChain, parseRedeemResponse } = require('../src/services/accountImport');
   const line = 'user1@example.com|ABC123|p@ss|word!#|wd=1366x900; datr=x; hatch_sess=12345678-aaaa.v1%3Axyz.sig|';
-  const { cookies, invalid } = parseCookieLines(`${line}\nuser2@example.com|ABC|nocookie|\n`);
+  const emptyCodeLine = 'user3@example.com||pass3|hatch_sess=22222222-bbbb.v1%3Axyz.sig';
+  const lastLine = 'user4@example.com|LAST99|pass4|hatch_sess=33333333-cccc.v1%3Axyz.sig';
+  const { cookies, invalid } = parseCookieLines(`${line}\nuser2@example.com|ABC|nocookie|\n${emptyCodeLine}\n${lastLine}\n`);
   assert.deepEqual(invalid, [2]);
-  assert.equal(cookies.length, 1);
+  assert.equal(cookies.length, 3);
   assert.equal(cookies[0].email, 'user1@example.com');
+  assert.equal(cookies[0].ownCode, 'ABC123');
+  assert.equal(cookies[1].ownCode, null);
+  assert.equal(cookies[2].ownCode, 'LAST99');
   assert.equal(cookies[0].cookie, 'wd=1366x900; datr=x; hatch_sess=12345678-aaaa.v1%3Axyz.sig');
   assert.ok(!cookies[0].cookie.includes('p@ss') && !cookies[0].cookie.includes('ABC123'));
+
+  assert.deepEqual(resolveReferralChain(cookies, { redeem: true }), {
+    initialCode: 'LAST99',
+    codes: ['LAST99', 'ABC123', 'ABC123']
+  });
+  assert.deepEqual(resolveReferralChain(cookies, { redeem: true, initialCode: 'init01' }), {
+    initialCode: 'INIT01',
+    codes: ['INIT01', 'ABC123', 'ABC123']
+  });
+  assert.deepEqual(resolveReferralChain(cookies, { redeem: false }), {
+    initialCode: null,
+    codes: [null, null, null]
+  });
+
+  assert.equal(parseRedeemResponse(200, { success: true, redemptionStatus: 'redeemed' }).status, 'confirmed');
+  assert.equal(parseRedeemResponse(400, { error: 'Already redeemed' }).status, 'unsupported');
+  assert.equal(parseRedeemResponse(401, { error: 'Unauthorized' }).status, 'failed');
 });
 
 test('proxy "pool" resolves to a random pool entry; other values are unchanged', () => {

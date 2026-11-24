@@ -451,7 +451,9 @@ router.post('/api/accounts/import', async (req, res, next) => {
       cookies: body.cookies,
       proxies: body.proxies,
       prefix: body.prefix,
-      validate: body.validate !== false
+      validate: body.validate !== false,
+      redeem: Boolean(body.redeem),
+      initialCode: body.initial_code
     }));
   } catch (err) {
     next(err);

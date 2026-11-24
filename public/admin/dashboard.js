@@ -1023,31 +1023,73 @@ const BULK_STATUS_BADGE = {
   canceled: 'badge-offline'
 };
 
+const REDEEM_STATUS_BADGE = {
+  pending: 'badge-queued',
+  confirmed: 'badge-succeeded',
+  unsupported: 'badge-offline',
+  failed: 'badge-failed',
+  skipped: 'badge-offline'
+};
+
 function countCookieLines(text) {
   return text.split(/\r?\n/).filter((l) => /hatch_sess=/.test(l)).length;
+}
+
+function detectLastReferralCode(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const fields = line.split('|').map((f) => f.trim());
+    const cookieIdx = fields.findIndex((f) => /hatch_sess=/.test(f));
+    if (cookieIdx >= 2 && fields[1] && !fields[1].includes('@') && !fields[1].includes('=')) {
+      const code = fields[1].toUpperCase();
+      if (/^[A-Z0-9_-]{3,32}$/.test(code)) return code;
+    }
+  }
+  return null;
+}
+
+function updateBulkCookiesMeta(text) {
+  document.getElementById('bulkCookieCount').textContent = `${countCookieLines(text)} cookies`;
+  const lastCode = detectLastReferralCode(text);
+  const hint = document.getElementById('bulkChainHint');
+  if (hint) {
+    hint.textContent = lastCode
+      ? `Detected initial code from last account: ${lastCode}`
+      : 'Auto-uses the last account\'s code as initial code.';
+  }
 }
 
 function renderBulkImport(batch) {
   document.getElementById('bulkImportProgress').style.display = 'block';
   const c = batch.counts || {};
   const pending = (c.queued || 0) + (c.processing || 0) + (c.waiting_vm || 0);
-  document.getElementById('bulkImportTitle').textContent = `Batch ${batch.id} · ${formatDate(batch.created_at)} · every ${batch.interval_sec}s`;
+  document.getElementById('bulkImportTitle').textContent = `Batch ${batch.id} · ${formatDate(batch.created_at)} · every ${batch.interval_sec}s` + (batch.redeem ? ` · HTTP redeem${batch.initial_code ? ` (init: ${batch.initial_code})` : ''}` : '');
   document.getElementById('bulkImportCounts').textContent =
     `${c.done || 0} done · ${c.failed || 0} failed · ${c.skipped || 0} skipped · ${c.processing || 0} processing · ${c.queued || 0} queued` +
     (c.waiting_vm ? ` · ${c.waiting_vm} waiting for a Meta VM (retried every 10 min)` : '') +
     (c.canceled ? ` · ${c.canceled} canceled` : '') +
     (batch.invalid_lines?.length ? ` · ignored lines without hatch_sess: ${batch.invalid_lines.join(', ')}` : '');
   document.getElementById('btnCancelBulkImport').style.display = (c.queued || c.waiting_vm) ? 'inline-flex' : 'none';
-  document.getElementById('bulkImportItems').innerHTML = (batch.items || []).map((it) => `
+  document.getElementById('bulkImportItems').innerHTML = (batch.items || []).map((it) => {
+    const redeemCell = it.redeem_status
+      ? `<span class="badge ${REDEEM_STATUS_BADGE[it.redeem_status] || ''}" title="${escapeHtml(it.redeem_error || '')}">${escapeHtml(it.redeem_status)}${it.redeemed_with ? ` (${escapeHtml(it.redeemed_with)})` : ''}</span>`
+      : '<span style="color: var(--text-dim);">—</span>';
+    const detail = [it.error || (it.account_id ? it.account_id : ''), it.redeem_error ? `Redeem: ${it.redeem_error}` : ''].filter(Boolean).join(' · ');
+    return `
     <tr>
       <td>${it.index + 1}</td>
       <td>${it.line}</td>
       <td class="font-mono" style="font-size: 11px;">${escapeHtml(it.email || it.session || '-')}</td>
+      <td class="font-mono" style="font-size: 11px;">${escapeHtml(it.own_code || '—')}</td>
+      <td style="font-size: 11px;">${redeemCell}</td>
       <td>${escapeHtml(it.name || '-')}</td>
       <td class="font-mono" style="font-size: 11px;">${escapeHtml(it.proxy || 'direct')}</td>
       <td><span class="badge ${BULK_STATUS_BADGE[it.status] || ''}">${escapeHtml(it.status)}</span></td>
-      <td style="font-size: 11px; max-width: 280px; white-space: normal;">${escapeHtml(it.error || (it.account_id ? it.account_id : ''))}</td>
-    </tr>`).join('');
+      <td style="font-size: 11px; max-width: 280px; white-space: normal;">${escapeHtml(detail)}</td>
+    </tr>`;
+  }).join('');
   return pending;
 }
 
@@ -1111,8 +1153,22 @@ document.getElementById('openBulkImportBtn')?.addEventListener('click', () => {
   if (bulkImportBatchId) startBulkImportPolling();
 });
 
+document.getElementById('bulkFile')?.addEventListener('change', (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  document.getElementById('bulkFileName').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = String(reader.result || '');
+    const textarea = document.getElementById('bulkCookies');
+    textarea.value = text;
+    updateBulkCookiesMeta(text);
+  };
+  reader.readAsText(file);
+});
+
 document.getElementById('bulkCookies')?.addEventListener('input', (e) => {
-  document.getElementById('bulkCookieCount').textContent = `${countCookieLines(e.target.value)} cookies`;
+  updateBulkCookiesMeta(e.target.value);
 });
 
 document.getElementById('formBulkImport')?.addEventListener('submit', async (e) => {
@@ -1127,13 +1183,17 @@ document.getElementById('formBulkImport')?.addEventListener('submit', async (e) 
         cookies: document.getElementById('bulkCookies').value,
         proxies: document.getElementById('bulkProxies').value,
         prefix: document.getElementById('bulkPrefix').value.trim(),
-        validate: document.getElementById('bulkValidate').checked
+        validate: document.getElementById('bulkValidate').checked,
+        redeem: document.getElementById('bulkRedeem').checked,
+        initial_code: document.getElementById('bulkInitialCode').value.trim() || undefined
       }
     });
     const queued = batch.counts?.queued || 0;
     showToast(`Queued ${queued} account(s)${batch.counts?.skipped ? `, skipped ${batch.counts.skipped} duplicate(s)` : ''}.`, 'success');
     document.getElementById('bulkCookies').value = '';
-    document.getElementById('bulkCookieCount').textContent = '0 cookies';
+    document.getElementById('bulkFile').value = '';
+    document.getElementById('bulkFileName').textContent = '';
+    updateBulkCookiesMeta('');
     bulkImportBatchId = batch.id;
     renderBulkImport(batch);
     startBulkImportPolling();
