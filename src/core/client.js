@@ -12,7 +12,7 @@ const {
   decodeProtoFields,
   NoiseFrameDecoder
 } = require('./proto');
-const { extractWss, extractCookie, getWssExpiry, buildHybrid, resolveProxy } = require('./credentials');
+const { extractWss, extractCookie, getWssExpiry, buildHybrid, resolveProxy, MUSE_BROWSER_HEADERS } = require('./credentials');
 
 const DEFAULT_COOKIES = process.env.MUSE_COOKIES || '';
 // vm_state values from GET /api/session for a VM that must be resumed before connecting.
@@ -342,20 +342,7 @@ class MuseClient extends EventEmitter {
     for (let attempt = 1; attempt <= maxSessionRetries; attempt++) {
       try {
         console.log(`[Bootstrap] Querying Meta Muse Session API (attempt ${attempt}/${maxSessionRetries}: GET https://muse.ai/api/session?vm_state=live) ...`);
-        const restHeaders = {
-          'cookie': cleanCookies,
-          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'accept': '*/*',
-          'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
-          'origin': 'https://muse.ai',
-          'referer': 'https://muse.ai/',
-          'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
-          'sec-ch-ua-mobile': '?0',
-          'sec-ch-ua-platform': '"Windows"',
-          'sec-fetch-dest': 'empty',
-          'sec-fetch-mode': 'cors',
-          'sec-fetch-site': 'same-origin'
-        };
+        const restHeaders = { 'cookie': cleanCookies, ...MUSE_BROWSER_HEADERS };
 
         const restConfig = {
           headers: restHeaders,

@@ -14,7 +14,7 @@
 
 const config = require('../config');
 const { Account } = require('../models');
-const { normalizeProxy, resolveProxy, POOL_PROXY } = require('../core/credentials');
+const { normalizeProxy, resolveProxy, POOL_PROXY, MUSE_BROWSER_HEADERS } = require('../core/credentials');
 const proxyPool = require('./proxyPool');
 const { logger, sanitize } = require('../logger');
 const { generateId } = require('../utils/crypto');
@@ -149,7 +149,9 @@ function parseRedeemResponse(status, data) {
 
   let errMsg = '';
   if (resData) {
-    if (typeof resData.error === 'string') errMsg = resData.error;
+    // Muse rejects with {success:false, reason:"invalid", detail:"The referral code isn't valid…"}.
+    if (typeof resData.detail === 'string' && resData.detail) errMsg = resData.reason ? `${resData.reason}: ${resData.detail}` : resData.detail;
+    else if (typeof resData.error === 'string') errMsg = resData.error;
     else if (resData.error?.message) errMsg = resData.error.message;
     else if (resData.message) errMsg = resData.message;
     else if (resData.redemptionStatus) errMsg = `Redemption status: ${resData.redemptionStatus}`;
@@ -160,11 +162,15 @@ function parseRedeemResponse(status, data) {
     errMsg = `HTTP ${status}`;
   }
 
-  if (status === 401 || status === 403) {
-    return { ok: false, status: 'failed', error: `Session unauthorized or expired (HTTP ${status}): ${errMsg}` };
+  if (status === 401) {
+    return { ok: false, status: 'failed', error: `Session unauthorized or expired (HTTP 401): ${errMsg}` };
+  }
+  if (status === 403) {
+    // Seen as {"error":"Forbidden"} from Vercel when the request did not look like the web app.
+    return { ok: false, status: 'failed', error: `Rejected by muse.ai (HTTP 403): ${errMsg}` };
   }
 
-  const checkText = `${errMsg} ${resData?.redemptionStatus || ''}`;
+  const checkText = `${errMsg} ${resData?.reason || ''} ${resData?.redemptionStatus || ''}`;
   if (REDEEM_UNSUPPORTED_RE.test(checkText)) {
     return { ok: false, status: 'unsupported', error: errMsg || 'Account ineligible or already redeemed' };
   }
@@ -181,12 +187,8 @@ async function redeemInviteCode(cookieStr, code, proxy = null) {
       'https://muse.ai/api/hatch/invite-code/redeem',
       { code, supportsRedemptionStatus: true },
       {
-        headers: {
-          cookie: cookieStr,
-          'content-type': 'application/json',
-          origin: 'https://muse.ai',
-          referer: 'https://muse.ai/'
-        },
+        // Without browser headers muse.ai answers 403 {"error":"Forbidden"} (verified 2026-11-25).
+        headers: { ...MUSE_BROWSER_HEADERS, cookie: cookieStr, 'content-type': 'application/json' },
         httpsAgent,
         proxy: false,
         validateStatus: () => true,

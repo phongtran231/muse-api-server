@@ -1053,6 +1053,12 @@ test('bulk import reads "email|code|password|cookie|" lines without keeping the 
   assert.equal(parseRedeemResponse(200, { success: true, redemptionStatus: 'redeemed' }).status, 'confirmed');
   assert.equal(parseRedeemResponse(400, { error: 'Already redeemed' }).status, 'unsupported');
   assert.equal(parseRedeemResponse(401, { error: 'Unauthorized' }).status, 'failed');
+  // Real muse.ai answers (2026-11-25): bot-looking request, and an invalid code.
+  assert.match(parseRedeemResponse(403, { error: 'Forbidden' }).error, /Rejected by muse\.ai \(HTTP 403\)/);
+  const invalidCode = parseRedeemResponse(400, { success: false, reason: 'invalid', detail: "The referral code isn't valid. Check the code and try again." });
+  assert.equal(invalidCode.status, 'failed');
+  assert.match(invalidCode.error, /^invalid: The referral code isn't valid/);
+  assert.equal(parseRedeemResponse(400, { success: false, reason: 'already_redeemed', detail: 'You already used a code.' }).status, 'unsupported');
 });
 
 test('proxy "pool" resolves to a random pool entry; other values are unchanged', () => {
@@ -1093,6 +1099,14 @@ test('the job WebSocket uses only the job proxy pool, never the add/wake proxy',
   const connect = src.slice(src.indexOf('this.ws = new WebSocket(') - 700, src.indexOf('this.ws = new WebSocket('));
   assert.match(connect, /new HttpsProxyAgent\(this\.jobProxy\)/);
   assert.doesNotMatch(connect, /this\.proxy\b|MUSE_PROXY|HTTPS_PROXY/);
+});
+
+test('muse.ai REST calls send browser headers (bare axios requests get 403)', () => {
+  const { MUSE_BROWSER_HEADERS } = require('../src/core/credentials');
+  assert.match(MUSE_BROWSER_HEADERS['user-agent'], /Chrome\//);
+  assert.equal(MUSE_BROWSER_HEADERS['sec-fetch-site'], 'same-origin');
+  const imp = fs.readFileSync(path.join(root, 'src/services/accountImport.js'), 'utf8');
+  assert.match(imp, /invite-code\/redeem[\s\S]{0,400}\.\.\.MUSE_BROWSER_HEADERS/);
 });
 
 test('upstream overload replies are told apart from content refusals', () => {
