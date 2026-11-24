@@ -452,6 +452,12 @@ function renderAccountsVirtualRows() {
     return;
   }
 
+  // A hidden tab measures every row as 0px tall, which makes the virtualizer render
+  // more rows, measure them as 0 again and loop until the browser freezes.
+  // Switching back to Accounts calls loadAccounts(), which renders again.
+  const scrollEl = document.getElementById('accountsTableScroll');
+  if (currentTab !== 'accounts' || !scrollEl || scrollEl.clientHeight === 0) return;
+
   const virtualizer = ensureAccountsVirtualizer();
   if (!virtualizer) {
     tbody.innerHTML = accountsCache.map((a, i) => renderAccountRow(a, i)).join('');
