@@ -28,7 +28,7 @@ const { EventEmitter } = require('events');
 const config = require('../config');
 const { logger, sanitize } = require('../logger');
 const { Job, TERMINAL_STATUSES } = require('../models');
-const { pool, detectAccountLimit } = require('./pool');
+const { pool, detectAccountLimit, detectUpstreamOverload } = require('./pool');
 const storage = require('./storage');
 const media = require('./media');
 const usage = require('./usage');
@@ -386,6 +386,11 @@ class Dispatcher extends EventEmitter {
       if (!result?.success) {
         // The account worked; the model simply declined / produced nothing.
         ctx.lease.release({ success: true });
+        // Muse's generation backend was overloaded: report it as such (not the
+        // prompt's fault). Not retried automatically; the client decides.
+        if (detectUpstreamOverload(result?.text || result?.error)) {
+          throw new ApiError(ErrorCodes.UPSTREAM_OVERLOADED, { message: sanitize(result?.error) || undefined });
+        }
         // ...unless the reply says the account itself is capped / not allowed:
         // pause that capability on the account for 24h and retry elsewhere.
         const limit = detectAccountLimit(result?.text || result?.error);

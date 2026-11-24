@@ -83,6 +83,10 @@ a failed generation, or a question), the job fails with \`content_not_generated\
 and \`error.message\` contains the model's reply. Such jobs are not retried on other
 accounts; rephrase the prompt or change the references.
 
+When the reply says the upstream generation service itself failed (overloaded,
+503, unavailable), the job fails with \`upstream_overloaded\` instead. The prompt
+is not at fault; it is not retried automatically, so resubmit it later.
+
 ## Synchronous vs asynchronous generation
 * **Images** are synchronous by default. If generation exceeds the server wait
   window the API answers \`202 Accepted\` with a job object instead; poll the

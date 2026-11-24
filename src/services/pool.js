@@ -84,6 +84,15 @@ function isUpstreamRateLimited(err) {
 const CAP_RE = /\b(daily|24[- ]?hours?|today['’]?s?|per[- ]day)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance)\b|\b(reached|hit|used up|exhausted|maxed out|run out of)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance|generations?|credits?)\b|\bno (more )?(video |image )?(generations?|credits?) (left|remaining)\b|\b(limit|quota) (resets?|will reset|refreshes)\b/i;
 const BLOCKED_RE = /\b(video|image) generation (is |isn['’]t |is not )?(currently )?(not )?(available|enabled|supported|turned on) (for|on|in) (your|this) (account|region|country|plan)\b|\b(your|this) (account|plan) (can['’]?t|cannot|isn['’]t able to|is not able to|doesn['’]t have access to|does not have access to|is not eligible)\b[^.!?\n]{0,40}\b(videos?|images?|generation)\b|\b(don['’]?t|do not) have access to (video|image) generation\b|\b(video|image) generation (has been|is) (disabled|restricted|blocked|paused)\b/i;
 const CAPABILITY_LIMIT_MS = 24 * 60 * 60 * 1000;
+// Muse's own video/image backend failed (seen in bursts: "the video service is
+// overloaded right now — it returned a 503"). Neither the prompt nor the account
+// is at fault. Content refusals ("I can't make that video as described") do not match.
+const OVERLOAD_RE = /\boverload(ed)?\b|\b503\b|\b(service|generator|backend)\b[^.!?\n]{0,40}(\b(unavailable|down|busy|failed|internal error)\b|\b(isn['’]?t|is not|wasn['’]?t|was not) available\b|\b50[0234]\b)/i;
+
+/** True when a text-only reply says the upstream generation service itself failed. */
+function detectUpstreamOverload(text) {
+  return OVERLOAD_RE.test(String(text || ''));
+}
 
 /** 'cap' | 'blocked' | null for a text-only model reply to a media request. */
 function detectAccountLimit(text) {
@@ -1348,4 +1357,4 @@ class AccountPool extends EventEmitter {
 
 const pool = new AccountPool();
 
-module.exports = { pool, AccountPool, Lease, detectAccountLimit };
+module.exports = { pool, AccountPool, Lease, detectAccountLimit, detectUpstreamOverload };

@@ -96,9 +96,13 @@ JobSchema.index({ status: 1, created_at: -1 });
 JobSchema.index({ type: 1, created_at: -1 });
 // Startup seed of 24h per-account usage (pool._loadRecentUses).
 JobSchema.index({ started_at: 1 });
-// Client listings & per-key concurrency counting.
-JobSchema.index({ api_key_id: 1, created_at: -1 });
-JobSchema.index({ api_key_id: 1, status: 1 });
+// Client listings (GET /v1/jobs, sorted created_at desc, _id desc as cursor
+// tiebreak) & per-key concurrency counting (prefix api_key_id + status).
+// Without the trailing sort keys Mongo sorted a whole key's history in memory:
+// ~1.7s per page for a key with 77k succeeded jobs (inmu, 2026-11-24).
+JobSchema.index({ api_key_id: 1, created_at: -1, _id: -1 });
+JobSchema.index({ api_key_id: 1, status: 1, created_at: -1, _id: -1 });
+JobSchema.index({ api_key_id: 1, type: 1, created_at: -1, _id: -1 });
 // Orphan detection (stale heartbeats).
 JobSchema.index({ status: 1, heartbeat_at: 1 });
 // Webhook outbox: only jobs with an undelivered webhook are indexed, so the 2s

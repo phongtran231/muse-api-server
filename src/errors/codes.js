@@ -93,6 +93,7 @@ const ErrorCodes = Object.freeze({
   // ---- 502 / 504 Upstream ----------------------------------------------------
   UPSTREAM_ERROR: { status: 502, type: T.UPSTREAM, code: 'upstream_error', message: 'The upstream AI provider returned an error.' },
   UPSTREAM_AUTH_FAILED: { status: 502, type: T.UPSTREAM, code: 'upstream_auth_failed', message: 'The upstream account credentials were rejected. An administrator must refresh them.' },
+  UPSTREAM_OVERLOADED: { status: 503, type: T.UPSTREAM, code: 'upstream_overloaded', message: 'The upstream video/image service is temporarily overloaded. Retry later.' },
   UPSTREAM_TIMEOUT: { status: 504, type: T.UPSTREAM, code: 'upstream_timeout', message: 'The upstream AI provider did not respond in time.' },
 
   // ---- 503 Service Unavailable -----------------------------------------------

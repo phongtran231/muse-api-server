@@ -1095,6 +1095,37 @@ test('the job WebSocket uses only the job proxy pool, never the add/wake proxy',
   assert.doesNotMatch(connect, /this\.proxy\b|MUSE_PROXY|HTTPS_PROXY/);
 });
 
+test('upstream overload replies are told apart from content refusals', () => {
+  const { detectUpstreamOverload, detectAccountLimit } = isolated('src/services/pool.js', {
+    '../models': { CAPABILITIES: ['chat', 'image', 'video'], Account: { updateOne: async () => ({}) } }
+  });
+  // Real replies from inmu on 2026-11-24.
+  for (const reply of [
+    "I tried to generate the video, but the video service is overloaded right now — it failed with a 503 after 2 attempts.",
+    "Your 10-second, 9:16 video didn't go through this time — the video service was overloaded and returned a 503 error.",
+    "I tried to create it exactly as specified, but the video generation service is temporarily unavailable right now — it failed after a few attempts on the backend.",
+    "I couldn't generate that video this time — the video service was unavailable after trying.",
+    "The video generator is currently unavailable and failed after its retries.",
+    "Sorry — I tried to generate that video, but the video service failed and no video was completed.",
+    "Your video didn't get created — the video generation service came back with an internal error (500).",
+    "I couldn't generate the video this time: the video service isn't available at the moment."
+  ]) {
+    assert.equal(detectUpstreamOverload(reply), true, reply);
+    assert.equal(detectAccountLimit(reply), null, reply);
+  }
+  for (const reply of [
+    "I couldn't generate that video as requested. I can make a different version with the same setup if you'd like.",
+    "I can't make that video as described. Want me to try a different take on the scene?",
+    "That one couldn't be generated, so no clip was created. I can try a safer version with the same joke and timing.",
+    "You've reached your daily video limit. It resets in about 24 hours."
+  ]) assert.equal(detectUpstreamOverload(reply), false, reply);
+
+  const dispatcher = fs.readFileSync(path.join(root, 'src/services/dispatcher.js'), 'utf8');
+  assert.match(dispatcher, /detectUpstreamOverload\([\s\S]*?UPSTREAM_OVERLOADED/);
+  const { isAccountLevelFailure } = require('../src/errors');
+  assert.equal(isAccountLevelFailure({ code: 'upstream_overloaded' }), false, 'overload must not auto-retry');
+});
+
 test('account caps / access refusals pause that capability for 24h; content refusals do not', () => {
   const { AccountPool, detectAccountLimit } = isolated('src/services/pool.js', {
     '../models': { CAPABILITIES: ['chat', 'image', 'video'], Account: { updateOne: async () => ({}) } }
