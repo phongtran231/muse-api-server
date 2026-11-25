@@ -1069,8 +1069,10 @@ class MuseClient extends EventEmitter {
     // Strip sandbox:// if present
     const cleanPath = filePath.replace(/^sandbox:\/\//, '');
     let offset = 0;
-    // 128KB chunk size guarantees fast downloads without oversized WebSocket payload fragmentation
-    const chunkSize = 128 * 1024;
+    // The VM returns at most 2 MB per /fs/read, and each read is a full round trip
+    // (~0.8s through a job proxy): 2 MB reads download ~6x faster than 128 KB ones
+    // (measured 163 KB/s -> ~1 MB/s). The loop still stops on `eof`, never on a short read.
+    const chunkSize = 2 * 1024 * 1024;
     const buffers = [];
 
     while (offset <= maxBytes) {
