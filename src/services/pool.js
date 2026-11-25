@@ -844,16 +844,35 @@ class AccountPool extends EventEmitter {
     }
 
     // One job proxy per connection (random pick); null = direct.
-    const jobProxy = proxyPool.job.pick();
+    let jobProxy = proxyPool.job.pick();
     const buildClient = (force) => {
       const client = new MuseClient({ cookies: entry.doc.credential, proxy, jobProxy });
       if (force) client.forceRefresh = true;
       return client;
     };
+    // A job proxy that cannot be reached is disabled for 30 min and another one
+    // is tried right away (not a reason to renew the token).
+    const connectClient = async () => {
+      for (let attempt = 0; ; attempt += 1) {
+        const c = buildClient(false);
+        try {
+          await c.connect();
+          return c;
+        } catch (err) {
+          this._closeClient(c);
+          if (attempt < 2 && jobProxy && proxyPool.job.reportFailure(jobProxy, err)) {
+            log.warn({ account: entry.id, jobProxy: proxyLabel(jobProxy), err: sanitize(err.message) }, 'Job proxy unreachable; retrying through another proxy');
+            jobProxy = proxyPool.job.pick();
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
 
-    let client = buildClient(false);
+    let client = null;
     try {
-      await client.connect();
+      client = await connectClient();
     } catch (err) {
       // 502/503/504 on the WSS handshake usually means the VM is suspended: a cookie
       // renewal requests a wake over HTTP when this connection is needed by a job.
@@ -865,8 +884,7 @@ class AccountPool extends EventEmitter {
         log.info({ account: entry.id, name: entry.doc.name }, 'WebSocket connection failed with retryable error; regenerating from attached cookie');
         try {
           await this._renewCredential(entry, renewOptions);
-          client = buildClient(false);
-          await client.connect();
+          client = await connectClient();
         } catch (healErr) {
           this._closeClient(client);
           if (!isVmUnavailable(healErr) && healErr.code !== 'MUSE_VM_SUSPENDED') throw healErr;
@@ -1079,11 +1097,13 @@ class AccountPool extends EventEmitter {
       log.info({ account: entry.id, name: entry.doc.name }, 'Auto-renewing WSS URL from attached cookie...');
 
       let result;
+      const proxy = options.proxy !== undefined ? options.proxy : wakeProxy(entry.doc);
       try {
-        const proxy = options.proxy !== undefined ? options.proxy : wakeProxy(entry.doc);
         if (options.proxy === undefined) entry.renewedProxy = proxy; // the next _connect uses the same IP
         result = await fetchWssFromCookie(cred.cookie, proxy, { ...options, proxy });
       } catch (err) {
+        // The add/wake proxy itself was unreachable: disable it for 30 min (next try picks another).
+        if (proxyPool.reportFailure(proxy, err)) entry.renewedProxy = undefined;
         if (err.code === 'MUSE_VM_SUSPENDED') {
           // Not a failure: Meta suspends idle VMs. Woken on demand (see _ensureClient).
           this._markSleeping(entry);

@@ -1029,7 +1029,7 @@ function proxyStatusHtml(status) {
   return (status || []).map((s) => `
     <div style="display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border-subtle);">
       <span class="font-mono">${escapeHtml(s.proxy)}</span>
-      <span style="color: ${s.alive ? '#34D399' : '#FB7185'};">${s.alive ? 'OK' : 'DOWN'}${s.error ? ` · ${escapeHtml(s.error)}` : ''}${s.checked_at ? ` · ${timeAgo(s.checked_at)}` : ' · not checked yet'}</span>
+      <span style="color: ${s.alive ? '#34D399' : '#FB7185'};">${s.disabled_until && Date.parse(s.disabled_until) > Date.now() ? `OFF until ${new Date(s.disabled_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : (s.alive ? 'OK' : 'DOWN')}${s.error ? ` · ${escapeHtml(s.error)}` : ''}${s.checked_at ? ` · ${timeAgo(s.checked_at)}` : ' · not checked yet'}</span>
     </div>`).join('');
 }
 

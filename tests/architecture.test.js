@@ -1179,3 +1179,38 @@ test('top-up credits keep an account usable after its weekly allowance is used u
   assert.equal(at({ usage_percent: 40, topup_balance: 0, topup_status: 'depleted', blocked: true }), true);
   assert.equal(at({ usage_percent: 40, topup_balance: 0, topup_status: 'depleted', blocked: false }), false);
 });
+
+test('an unreachable proxy is turned off for 30 minutes; upstream errors through it are not its fault', () => {
+  const { createProxyPool, isProxyFailure } = isolated('src/services/proxyPool.js', {
+    '../models': { Setting: { findOne: () => ({ lean: async () => null }), findOneAndUpdate: async () => ({}) } }
+  });
+  for (const msg of ['connect ECONNREFUSED 1.2.3.4:80', 'Unexpected server response: 407', 'tunneling socket could not be established', 'socket hang up'])
+    assert.equal(isProxyFailure(new Error(msg)), true, msg);
+  for (const msg of ['Unexpected server response: 429', 'Unexpected server response: 502', 'GET /api/session responded with HTTP 503'])
+    assert.equal(isProxyFailure(new Error(msg)), false, msg);
+
+});
+
+test('a proxy reported unreachable is skipped for 30 minutes, even by health checks', async () => {
+  let probeFails = false;
+  const { createProxyPool } = isolated('src/services/proxyPool.js', {
+    '../models': { Setting: { findOne: () => ({ lean: async () => null }), findOneAndUpdate: async () => ({}) } },
+    axios: { get: async () => { if (probeFails) throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); return { status: 200 }; } },
+    'https-proxy-agent': { HttpsProxyAgent: class {} }
+  }, '', { AbortSignal });
+  const pool = createProxyPool({ settingKey: 't', description: 't', name: 'test' });
+  const [a, b] = await pool.save('10.0.0.1:8080:u:p\n10.0.0.2:8080:u:p');
+  await pool.checkAll();
+  assert.equal(pool.reportFailure(a, new Error('Unexpected server response: 429')), false); // Meta's answer, proxy fine
+  assert.equal(pool.reportFailure(a, new Error('connect ECONNREFUSED 10.0.0.1:8080')), true);
+  for (let i = 0; i < 40; i++) assert.equal(pool.pick(), b);
+  await pool.checkAll(); // a successful check must not bring it back early
+  for (let i = 0; i < 40; i++) assert.equal(pool.pick(), b);
+  const off = pool.status().find((s) => s.proxy.startsWith('10.0.0.1'));
+  const mins = (Date.parse(off.disabled_until) - Date.now()) / 60000;
+  assert.ok(mins > 29 && mins <= 30, `disabled for ${mins} min`);
+  probeFails = true;
+  await pool.checkAll(); // a failing health check turns b off too
+  assert.equal(pool.pick(), null);
+  pool.stop();
+});

@@ -22,15 +22,47 @@ const { logger } = require('../logger');
 const log = logger.child({ component: 'proxy-pool' });
 const CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const CHECK_TIMEOUT_MS = 15000;
-const FAILURES_TO_DISABLE = 2;
+// A proxy that cannot be reached (health check or real use) sits out this long,
+// then is checked again; still failing means another 30 minutes.
+const DISABLE_MS = 30 * 60 * 1000;
+
+/**
+ * True when an error means the PROXY itself could not be used (refused, timed out,
+ * DNS, 407 auth/expired, tunnel failure). Upstream answers that came back through
+ * the proxy (Meta 429 / 5xx) prove the proxy works and do not count.
+ */
+function isProxyFailure(err) {
+  const msg = `${err?.code || ''} ${err?.message || ''}`;
+  if (/response: (429|5\d\d)\b|HTTP (429|5\d\d)\b/i.test(msg)) return false;
+  return /\b407\b|proxy|tunnel|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ESOCKETTIMEDOUT|socket hang up|ERR_CANCELED/i.test(msg);
+}
 
 function createProxyPool({ settingKey, description, name, onApply = () => {} }) {
   let proxies = [];
-  const health = new Map(); // proxy -> { alive, failures, checked_at, error }
+  const health = new Map(); // proxy -> { alive, failures, checked_at, error, disabled_until }
   let timer = null;
 
+  function isDisabled(proxy, now = Date.now()) {
+    return (Date.parse(health.get(proxy)?.disabled_until || '') || 0) > now;
+  }
+
   function isAlive(proxy) {
-    return health.get(proxy)?.alive !== false; // unchecked entries count as alive
+    return !isDisabled(proxy) && health.get(proxy)?.alive !== false; // unchecked entries count as alive
+  }
+
+  /** Takes a proxy out of the random pick for DISABLE_MS. */
+  function disable(proxy, error) {
+    const prev = health.get(proxy) || { failures: 0 };
+    const until = new Date(Date.now() + DISABLE_MS).toISOString();
+    if (!isDisabled(proxy)) log.warn({ pool: name, proxy: label(proxy), err: error, until }, 'Proxy unreachable; disabled for 30 minutes');
+    health.set(proxy, { alive: false, failures: (prev.failures || 0) + 1, checked_at: new Date().toISOString(), error, disabled_until: until });
+  }
+
+  /** Called by users of a picked proxy when it failed; only proxy-level failures disable it. */
+  function reportFailure(proxy, err) {
+    if (!proxy || !proxies.includes(proxy) || !isProxyFailure(err)) return false;
+    disable(proxy, String(err?.code || err?.message || err).slice(0, 200));
+    return true;
   }
 
   function pick() {
@@ -77,17 +109,14 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
   }
 
   async function checkOne(proxy) {
+    if (isDisabled(proxy)) return; // sitting out its 30 minutes; checked again afterwards
     const prev = health.get(proxy) || { alive: true, failures: 0 };
     try {
       await probe(proxy);
-      if (prev.alive === false) log.info({ proxy: label(proxy) }, 'Proxy is reachable again; back in the pool');
-      health.set(proxy, { alive: true, failures: 0, checked_at: new Date().toISOString(), error: null });
+      if (prev.alive === false) log.info({ pool: name, proxy: label(proxy) }, 'Proxy is reachable again; back in the pool');
+      health.set(proxy, { alive: true, failures: 0, checked_at: new Date().toISOString(), error: null, disabled_until: null });
     } catch (err) {
-      const failures = prev.failures + 1;
-      const error = err.code === 'ERR_CANCELED' ? `no response within ${CHECK_TIMEOUT_MS / 1000}s` : (err.code || err.message);
-      const alive = failures < FAILURES_TO_DISABLE;
-      if (prev.alive !== false && !alive) log.warn({ proxy: label(proxy), err: error }, 'Proxy failed health checks; removed from the random pick');
-      health.set(proxy, { alive, failures, checked_at: new Date().toISOString(), error });
+      disable(proxy, err.code === 'ERR_CANCELED' ? `no response within ${CHECK_TIMEOUT_MS / 1000}s` : (err.code || err.message));
     }
   }
 
@@ -155,7 +184,7 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     return proxies.map((proxy) => ({ proxy: label(proxy), ...(health.get(proxy) || { alive: true, failures: 0, checked_at: null, error: null }) }));
   }
 
-  return { load, save, list, status, pick, parse, checkAll, stop };
+  return { load, save, list, status, pick, parse, checkAll, stop, reportFailure };
 }
 
 const wakePool = createProxyPool({
@@ -170,4 +199,4 @@ const jobPool = createProxyPool({
   name: 'Job proxy pool'
 });
 
-module.exports = { ...wakePool, job: jobPool, createProxyPool };
+module.exports = { ...wakePool, job: jobPool, createProxyPool, isProxyFailure };
