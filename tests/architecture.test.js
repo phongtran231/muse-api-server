@@ -1213,10 +1213,12 @@ test('a proxy reported unreachable is skipped for 30 minutes, even by health che
   const off = pool.status().find((s) => s.proxy.startsWith('10.0.0.1'));
   const mins = (Date.parse(off.disabled_until) - Date.now()) / 60000;
   assert.ok(mins > 29 && mins <= 30, `disabled for ${mins} min`);
+  assert.equal(pool.hasUsable(), true);
   probeFails = true;
   await pool.checkAll(); await pool.checkAll();
   assert.equal(pool.pick(), b); // two failed checks: still in
   await pool.checkAll(); // third failure turns b off too
   assert.equal(pool.pick(), null);
+  assert.equal(pool.hasUsable(), false); // all off: connections go direct, so the 429 pause applies
   pool.stop();
 });

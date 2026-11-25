@@ -116,11 +116,12 @@ function wakeProxy(doc) {
 }
 
 /**
- * Egress of job WebSockets: direct from the server IP, unless the job proxy pool
- * has entries (then every connection picks a random proxy: not tracked).
+ * Egress of job WebSockets: direct from the server IP unless a job proxy is
+ * usable (then every connection picks a random proxy: not tracked). A pool whose
+ * proxies are all off still means direct, so the 429 pause must apply.
  */
 function egressKey() {
-  return proxyPool.job.list().length ? null : 'direct';
+  return proxyPool.job.hasUsable() ? null : 'direct';
 }
 
 /** A reserved slot on an account. Must be released exactly once. */

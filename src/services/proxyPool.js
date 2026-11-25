@@ -77,6 +77,11 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     return true;
   }
 
+  /** True when at least one proxy can be picked right now. */
+  function hasUsable() {
+    return proxies.some(isAlive);
+  }
+
   function pick() {
     const alive = proxies.filter(isAlive);
     if (!alive.length) return null;
@@ -199,7 +204,7 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     });
   }
 
-  return { load, save, list, status, pick, parse, checkAll, stop, reportFailure };
+  return { load, save, list, status, pick, hasUsable, parse, checkAll, stop, reportFailure };
 }
 
 const wakePool = createProxyPool({
