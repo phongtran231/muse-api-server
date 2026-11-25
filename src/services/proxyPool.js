@@ -22,9 +22,13 @@ const { logger } = require('../logger');
 const log = logger.child({ component: 'proxy-pool' });
 const CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const CHECK_TIMEOUT_MS = 15000;
-// A proxy that cannot be reached (health check or real use) sits out this long,
-// then is checked again; still failing means another 30 minutes.
+// A proxy that cannot be reached (health check or real use) FAILURES_TO_DISABLE
+// times within FAILURE_WINDOW_MS sits out DISABLE_MS, then is checked again. A
+// single reset / DNS hiccup (common when hundreds of sockets open at startup)
+// does not count as dead.
 const DISABLE_MS = 30 * 60 * 1000;
+const FAILURES_TO_DISABLE = 3;
+const FAILURE_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * True when an error means the PROXY itself could not be used (refused, timed out,
@@ -50,12 +54,20 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     return !isDisabled(proxy) && health.get(proxy)?.alive !== false; // unchecked entries count as alive
   }
 
-  /** Takes a proxy out of the random pick for DISABLE_MS. */
+  /** Records a failure; the FAILURES_TO_DISABLE-th within the window takes the proxy out for DISABLE_MS. */
   function disable(proxy, error) {
-    const prev = health.get(proxy) || { failures: 0 };
-    const until = new Date(Date.now() + DISABLE_MS).toISOString();
-    if (!isDisabled(proxy)) log.warn({ pool: name, proxy: label(proxy), err: error, until }, 'Proxy unreachable; disabled for 30 minutes');
-    health.set(proxy, { alive: false, failures: (prev.failures || 0) + 1, checked_at: new Date().toISOString(), error, disabled_until: until });
+    if (isDisabled(proxy)) return;
+    const now = Date.now();
+    const prev = health.get(proxy) || { alive: true };
+    const recent = [...(prev.recent_failures || []), now].filter((t) => now - t < FAILURE_WINDOW_MS);
+    const entry = { ...prev, failures: recent.length, recent_failures: recent, checked_at: new Date(now).toISOString(), error };
+    if (recent.length >= FAILURES_TO_DISABLE) {
+      entry.alive = false;
+      entry.disabled_until = new Date(now + DISABLE_MS).toISOString();
+      entry.recent_failures = [];
+      log.warn({ pool: name, proxy: label(proxy), err: error, failures: recent.length, until: entry.disabled_until }, 'Proxy unreachable; disabled for 30 minutes');
+    }
+    health.set(proxy, entry);
   }
 
   /** Called by users of a picked proxy when it failed; only proxy-level failures disable it. */
@@ -114,7 +126,7 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     try {
       await probe(proxy);
       if (prev.alive === false) log.info({ pool: name, proxy: label(proxy) }, 'Proxy is reachable again; back in the pool');
-      health.set(proxy, { alive: true, failures: 0, checked_at: new Date().toISOString(), error: null, disabled_until: null });
+      health.set(proxy, { alive: true, failures: 0, recent_failures: [], checked_at: new Date().toISOString(), error: null, disabled_until: null });
     } catch (err) {
       disable(proxy, err.code === 'ERR_CANCELED' ? `no response within ${CHECK_TIMEOUT_MS / 1000}s` : (err.code || err.message));
     }
@@ -181,7 +193,10 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
 
   /** Pool entries with their health, for the admin UI (labels only, no passwords). */
   function status() {
-    return proxies.map((proxy) => ({ proxy: label(proxy), ...(health.get(proxy) || { alive: true, failures: 0, checked_at: null, error: null }) }));
+    return proxies.map((proxy) => {
+      const { recent_failures: _ignored, ...h } = health.get(proxy) || { alive: true, failures: 0, checked_at: null, error: null };
+      return { proxy: label(proxy), ...h };
+    });
   }
 
   return { load, save, list, status, pick, parse, checkAll, stop, reportFailure };

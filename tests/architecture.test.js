@@ -1202,6 +1202,10 @@ test('a proxy reported unreachable is skipped for 30 minutes, even by health che
   const [a, b] = await pool.save('10.0.0.1:8080:u:p\n10.0.0.2:8080:u:p');
   await pool.checkAll();
   assert.equal(pool.reportFailure(a, new Error('Unexpected server response: 429')), false); // Meta's answer, proxy fine
+  // One hiccup is not enough; the third failure within 10 minutes turns it off.
+  assert.equal(pool.reportFailure(a, new Error('read ECONNRESET')), true);
+  assert.equal(pool.reportFailure(a, new Error('getaddrinfo EAI_AGAIN')), true);
+  assert.ok([a, b].includes(pool.pick()) && pool.status().every((s) => !s.disabled_until));
   assert.equal(pool.reportFailure(a, new Error('connect ECONNREFUSED 10.0.0.1:8080')), true);
   for (let i = 0; i < 40; i++) assert.equal(pool.pick(), b);
   await pool.checkAll(); // a successful check must not bring it back early
@@ -1210,7 +1214,9 @@ test('a proxy reported unreachable is skipped for 30 minutes, even by health che
   const mins = (Date.parse(off.disabled_until) - Date.now()) / 60000;
   assert.ok(mins > 29 && mins <= 30, `disabled for ${mins} min`);
   probeFails = true;
-  await pool.checkAll(); // a failing health check turns b off too
+  await pool.checkAll(); await pool.checkAll();
+  assert.equal(pool.pick(), b); // two failed checks: still in
+  await pool.checkAll(); // third failure turns b off too
   assert.equal(pool.pick(), null);
   pool.stop();
 });
