@@ -81,7 +81,7 @@ function isUpstreamRateLimited(err) {
 // The model refuses in text when the ACCOUNT (not the prompt) cannot produce media.
 // Only explicit limit / access wording matches; content refusals ("I couldn't
 // generate that video as written…") do not, so healthy accounts are never benched.
-const CAP_RE = /\b(daily|24[- ]?hours?|today['’]?s?|per[- ]day)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance)\b|\b(reached|hit|used up|exhausted|maxed out|run out of)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance|generations?|credits?)\b|\bno (more )?(video |image )?(generations?|credits?) (left|remaining)\b|\b(limit|quota) (resets?|will reset|refreshes)\b/i;
+const CAP_RE = /\b(daily|weekly|24[- ]?hours?|today['’]?s?|per[- ]day|per[- ]week)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance)\b|\b(reached|hit|used up|exhausted|maxed out|run out of)\b[^.!?\n]{0,40}\b(limits?|caps?|quotas?|allowance|generations?|credits?)\b|\bno (more )?(video |image )?(generations?|credits?) (left|remaining)\b|\b(limit|quota) (resets?|will reset|refreshes)\b|\bfree (weekly )?(allowance|limit|tier|usage)\b[^.!?\n]{0,30}\b100 ?%|\bconfirm (the )?(extra|additional|top-?up) tokens?\b/i;
 const BLOCKED_RE = /\b(video|image) generation (is |isn['’]t |is not )?(currently )?(not )?(available|enabled|supported|turned on) (for|on|in) (your|this) (account|region|country|plan)\b|\b(your|this) (account|plan) (can['’]?t|cannot|isn['’]t able to|is not able to|doesn['’]t have access to|does not have access to|is not eligible)\b[^.!?\n]{0,40}\b(videos?|images?|generation)\b|\b(don['’]?t|do not) have access to (video|image) generation\b|\b(video|image) generation (has been|is) (disabled|restricted|blocked|paused)\b/i;
 const CAPABILITY_LIMIT_MS = 24 * 60 * 60 * 1000;
 // Muse's own video/image backend failed (seen in bursts: "the video service is
@@ -92,6 +92,11 @@ const OVERLOAD_RE = /\boverload(ed)?\b|\b503\b|\b(service|generator|backend)\b[^
 /** True when a text-only reply says the upstream generation service itself failed. */
 function detectUpstreamOverload(text) {
   return OVERLOAD_RE.test(String(text || ''));
+}
+
+/** True when a cap reply is about the WEEKLY allowance (lasts until the quota reset). */
+function isWeeklyCap(text) {
+  return /\bweekly\b|per[- ]week|\bfree (allowance|limit|tier|usage)\b|(extra|additional|top-?up) tokens?/i.test(String(text || ''));
 }
 
 /** 'cap' | 'blocked' | null for a text-only model reply to a media request. */
@@ -263,6 +268,12 @@ class AccountPool extends EventEmitter {
   _isCapabilityLimited(entry, capability, now = Date.now()) {
     const until = Date.parse(entry.doc.capability_limits?.[capability]?.until || '') || 0;
     return until > now;
+  }
+
+  /** When the account's weekly quota resets (future ISO date) or null. */
+  quotaResetsAt(accountId) {
+    const at = Date.parse(this.entries.get(accountId)?.doc.quota?.resets_at || '') || 0;
+    return at > Date.now() ? new Date(at).toISOString() : null;
   }
 
   /**
@@ -1377,4 +1388,4 @@ class AccountPool extends EventEmitter {
 
 const pool = new AccountPool();
 
-module.exports = { pool, AccountPool, Lease, detectAccountLimit, detectUpstreamOverload };
+module.exports = { pool, AccountPool, Lease, detectAccountLimit, detectUpstreamOverload, isWeeklyCap };

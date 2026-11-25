@@ -28,7 +28,7 @@ const { EventEmitter } = require('events');
 const config = require('../config');
 const { logger, sanitize } = require('../logger');
 const { Job, TERMINAL_STATUSES } = require('../models');
-const { pool, detectAccountLimit, detectUpstreamOverload } = require('./pool');
+const { pool, detectAccountLimit, detectUpstreamOverload, isWeeklyCap } = require('./pool');
 const storage = require('./storage');
 const media = require('./media');
 const usage = require('./usage');
@@ -395,7 +395,10 @@ class Dispatcher extends EventEmitter {
         // pause that capability on the account for 24h and retry elsewhere.
         const limit = detectAccountLimit(result?.text || result?.error);
         if (limit) {
-          pool.limitCapability(ctx.lease.accountId, job.type, { kind: limit, message: result?.text || result?.error });
+          const reply = result?.text || result?.error;
+          // Weekly allowance: paused until Meta's quota reset, not just 24h.
+          const until = limit === 'cap' && isWeeklyCap(reply) ? pool.quotaResetsAt(ctx.lease.accountId) : null;
+          pool.limitCapability(ctx.lease.accountId, job.type, { kind: limit, message: reply, until });
           throw new ApiError(ErrorCodes.ACCOUNT_LIMIT_REACHED, { message: sanitize(result?.error) || undefined });
         }
         throw new ApiError(ErrorCodes.CONTENT_NOT_GENERATED, { message: sanitize(result?.error) || undefined });

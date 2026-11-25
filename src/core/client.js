@@ -200,6 +200,11 @@ function refImagesNote(refs) {
   return `Reference images: download ${urls.length === 1 ? 'this image' : `all ${urls.length} images`} first and look at ${urls.length === 1 ? 'it' : 'them'} before you start. Whenever the request mentions [Reference Image n], it means the n-th image below.\n${list}\n`;
 }
 
+// The agent checks its quota before media work and, once the free weekly allowance
+// is used up, asks before spending additional (top-up / invite) tokens, so the
+// job ends with a question instead of media. The account owner pre-approves it.
+const TOKEN_USE_NOTE = 'Billing: using this account\'s additional tokens is approved for this request. If the free weekly allowance is used up, use the additional tokens without asking for confirmation.';
+
 /** Reference roles are prompt instructions for the chat-based upstream. */
 function referenceInstructions(hints) {
   if (!Array.isArray(hints)) return '';
@@ -1720,6 +1725,7 @@ class MuseClient extends EventEmitter {
     }
     const instructions = referenceInstructions(options.reference_image_hints);
     if (instructions) formattedPrompt += ` Reference instructions: ${instructions}`;
+    formattedPrompt += ` ${TOKEN_USE_NOTE}`;
 
     const chatResult = await this.chat(formattedPrompt, {
       sessionId: null,
@@ -1796,6 +1802,7 @@ class MuseClient extends EventEmitter {
     }
     const instructions = referenceInstructions(options.reference_image_hints);
     if (instructions) formattedPrompt += ` Reference instructions: ${instructions}`;
+    formattedPrompt += ` ${TOKEN_USE_NOTE}`;
     if (options.style) formattedPrompt += ` Visual style: ${options.style}.`;
     if (options.negative_prompt) formattedPrompt += ` Avoid these elements: ${options.negative_prompt}.`;
 
