@@ -38,6 +38,8 @@ const { detectMediaType } = require('../utils/mime');
 const { generateId } = require('../utils/crypto');
 const { ApiError, ErrorCodes, classifyUpstreamError, isAccountLevelFailure, isTransportFailure } = require('../errors');
 
+// Time allowed after the generation timeout for downloading the result.
+const DOWNLOAD_ALLOWANCE_MS = 4 * 60 * 1000;
 const log = logger.child({ component: 'dispatcher' });
 
 const JOB_TYPES = ['image', 'video'];
@@ -379,8 +381,10 @@ class Dispatcher extends EventEmitter {
           onProgress
         });
 
-      // Hard guard on top of the client's own timeout (covers the download phase).
-      const result = await withTimeout(call, timeout + 60000, `${isVideo ? 'Video' : 'Image'} generation timed out.`, ctx.controller);
+      // Hard guard on top of the client's own timeout. It also covers the download
+      // phase, whose timed-out reads are retried (client.readFile), so it leaves
+      // room for those retries after a generation that finished near the timeout.
+      const result = await withTimeout(call, timeout + DOWNLOAD_ALLOWANCE_MS, `${isVideo ? 'Video' : 'Image'} generation timed out.`, ctx.controller);
       ctx.controller.signal.throwIfAborted();
 
       if (!result?.success) {
