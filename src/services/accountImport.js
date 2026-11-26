@@ -365,7 +365,6 @@ async function createBatch(input) {
   const prefix = String(input.prefix || 'acc').trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'acc';
   const proxies = parseProxyLines(input.proxies);
   const redeem = Boolean(input.redeem);
-  const standby = Boolean(input.standby);
   const chain = resolveReferralChain(cookies, { redeem, initialCode: input.initialCode });
 
   const accounts = await existingAccounts();
@@ -426,7 +425,6 @@ async function createBatch(input) {
     invalid_lines: invalid,
     validate: input.validate !== false,
     redeem,
-    standby,
     initial_code: chain.initialCode || null,
     interval_sec: config.accountImport.intervalMs / 1000,
     proxies: proxies.map(proxyHost)
@@ -442,7 +440,7 @@ async function createBatch(input) {
 
   await queue.addBulk(toQueue.map(({ item, cookie, proxy, redeemCode }) => ({
     name: 'import',
-    data: { batchId, index: item.index, name: item.name, email: item.email, cookie, proxy, validate: meta.validate, redeemCode, standby },
+    data: { batchId, index: item.index, name: item.name, email: item.email, cookie, proxy, validate: meta.validate, redeemCode },
     // Cookies must not linger in Redis once processed.
     opts: { jobId: `${batchId}-${item.index}`, removeOnComplete: true, removeOnFail: true }
   })));
@@ -479,7 +477,7 @@ function withTimeout(promise, ms) {
 }
 
 async function processItem(job) {
-  const { batchId, index, name, email, cookie, proxy, validate, redeemCode, standby = false, retries = 0, rateRetries = 0 } = job.data;
+  const { batchId, index, name, email, cookie, proxy, validate, redeemCode, retries = 0, rateRetries = 0 } = job.data;
   const item = await getItem(batchId, index);
   if (!item || item.status === 'canceled') return;
   item.status = 'processing';
@@ -503,11 +501,11 @@ async function processItem(job) {
         if (r.ok) log.info({ batch: batchId, index, name, code: redeemCode }, 'Redeemed invite code via HTTP');
         else log.warn({ batch: batchId, index, name, code: redeemCode, status: r.status, err: item.redeem_error }, 'Invite code redeem did not confirm');
       }
-      const onboarding = onboardAccount({ name, email, cookie: activeCookie, proxy, validate, standby });
+      const onboarding = onboardAccount({ name, email, cookie: activeCookie, proxy, validate });
       try {
         const { account, test } = await withTimeout(onboarding, config.accountImport.itemTimeoutMs);
-        Object.assign(item, { status: 'done', error: null, account_id: account._id, latency_ms: test?.latency_ms ?? null, standby: Boolean(account.standby) });
-        log.info({ batch: batchId, index, account: account._id, name, standby: Boolean(account.standby) }, standby ? 'Imported account into the standby queue' : 'Imported account');
+        Object.assign(item, { status: 'done', error: null, account_id: account._id, latency_ms: test?.latency_ms ?? null });
+        log.info({ batch: batchId, index, account: account._id, name }, 'Imported account');
       } catch (err) {
         if (err.code === 'IMPORT_TIMEOUT') {
           // The queue moves on; if onboarding still succeeds later, report it.

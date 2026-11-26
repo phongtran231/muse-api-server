@@ -21,7 +21,6 @@ const { requireDashboardAuth } = require('../middleware/dashboardAuth');
 const { serializeAccount, serializeApiKey, serializeJob } = require('../serializers');
 const { onboardAccount } = require('../services/accounts');
 const accountImport = require('../services/accountImport');
-const standby = require('../services/standby');
 const proxyPool = require('../services/proxyPool');
 const { logger, sanitize } = require('../logger');
 const { ApiError, ErrorCodes } = require('../errors');
@@ -168,7 +167,7 @@ function loadOverviewStats() {
   if (overviewCache.promise && Date.now() - overviewCache.at < OVERVIEW_CACHE_MS) return overviewCache.promise;
   const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
   const promise = Promise.all([
-    Account.find({}).select('enabled standby status concurrency').lean(),
+    Account.find({}).select('enabled status concurrency').lean(),
     jobCountsByStatusAndType(),
     Promise.all(JOB_TYPES.map(benchmarkFor)).then((r) => r.flat()),
     Job.countDocuments({ created_at: { $gte: dayAgo } }),
@@ -212,7 +211,6 @@ router.get('/api/overview', async (req, res, next) => {
     let degradedCount = 0;
     let expiredCount = 0;
     let disabledCount = 0;
-    let standbyCount = 0;
     let connectedSockets = 0;
 
     let chatLimitTotal = 0;
@@ -226,10 +224,6 @@ router.get('/api/overview', async (req, res, next) => {
       const live = snapshot.accounts[a._id];
       if (live?.connected) connectedSockets++;
 
-      if (a.standby) {
-        standbyCount++;
-        continue;
-      }
       if (!a.enabled) {
         disabledCount++;
         continue;
@@ -295,8 +289,6 @@ router.get('/api/overview', async (req, res, next) => {
         degraded: degradedCount,
         expired: expiredCount,
         disabled: disabledCount,
-        standby: standbyCount,
-        usable_video: pool.usableCount('video'),
         connected_websockets: connectedSockets,
         slots: {
           chat: { active: chatActiveTotal, available: pool.availableSlots('chat'), limit: chatLimitTotal },
@@ -451,38 +443,6 @@ router.post('/api/proxy-pool/assign-all', async (req, res, next) => {
   }
 });
 
-// Standby queue: imported accounts kept disabled until the pool runs low.
-router.get('/api/standby', async (req, res, next) => {
-  try {
-    res.json(await standby.status());
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.put('/api/standby', async (req, res, next) => {
-  try {
-    const body = req.body || {};
-    await standby.saveSettings({
-      ...(body.min_usable !== undefined ? { min_usable: body.min_usable } : {}),
-      ...(body.enabled !== undefined ? { enabled: Boolean(body.enabled) } : {})
-    });
-    await standby.runOnce();
-    res.json(await standby.status());
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post('/api/standby/run', async (req, res, next) => {
-  try {
-    await standby.runOnce();
-    res.json(await standby.status());
-  } catch (err) {
-    next(err);
-  }
-});
-
 // Bulk import: queue many cookies, onboarded one at a time (Redis queue).
 router.post('/api/accounts/import', async (req, res, next) => {
   try {
@@ -493,7 +453,6 @@ router.post('/api/accounts/import', async (req, res, next) => {
       prefix: body.prefix,
       validate: body.validate !== false,
       redeem: Boolean(body.redeem),
-      standby: Boolean(body.standby),
       initialCode: body.initial_code
     }));
   } catch (err) {
@@ -545,7 +504,6 @@ router.patch('/api/accounts/:id', async (req, res, next) => {
     const body = req.body || {};
     if (body.name !== undefined) doc.name = String(body.name).trim();
     if (body.enabled !== undefined) doc.enabled = Boolean(body.enabled);
-    if (doc.enabled) doc.standby = false; // enabled by hand: leaves the standby queue
     if (body.proxy !== undefined) doc.proxy = normalizeProxy(body.proxy);
     if (body.group !== undefined) doc.group = String(body.group).trim();
     if (body.capabilities) {

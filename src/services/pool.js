@@ -485,21 +485,6 @@ class AccountPool extends EventEmitter {
       .map((entry) => entry.id);
   }
 
-  /**
-   * Accounts that can take `capability` jobs: enabled, not paused for it, not
-   * expired, not out of credits and not parked for good. A short failure
-   * backoff still counts (the account comes back on its own).
-   */
-  usableCount(capability, now = Date.now()) {
-    let n = 0;
-    for (const entry of this.entries.values()) {
-      if (!this._supports(entry, capability, now) || entry.status === 'expired') continue;
-      if (entry.cooldownUntil === Number.MAX_SAFE_INTEGER || this._isQuotaBlocked(entry, now)) continue;
-      n += 1;
-    }
-    return n;
-  }
-
   /** True when at least one enabled account supports the capability. */
   hasCapability(capability) {
     for (const entry of this.entries.values()) if (this._supports(entry, capability)) return true;

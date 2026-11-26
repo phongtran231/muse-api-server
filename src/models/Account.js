@@ -20,9 +20,6 @@ const AccountSchema = new mongoose.Schema(
     proxy: { type: String, default: null, select: false },
     group: { type: String, default: '', index: true },
     enabled: { type: Boolean, default: true, index: true },
-    // Imported into the standby queue: kept disabled until the pool runs low on
-    // usable accounts (services/standby releases the oldest first).
-    standby: { type: Boolean, default: false, index: true },
     status: { type: String, enum: ACCOUNT_STATUSES, default: 'unknown' },
     capabilities: {
       chat: { type: Boolean, default: true },

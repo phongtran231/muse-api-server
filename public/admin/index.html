@@ -1282,22 +1282,6 @@
             <input type="text" id="bulkInitialCode" class="form-input font-mono" placeholder="Auto (last account)" maxlength="32" style="text-transform: uppercase;">
           </div>
         </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px;">
-          <div style="display: flex; flex-direction: column; gap: 6px;">
-            <label class="form-checkbox-label">
-              <input type="checkbox" id="bulkStandby" class="form-checkbox">
-              <span>Put into the standby queue (released when usable accounts drop below the minimum)</span>
-            </label>
-            <span id="standbyStatus" style="font-size: 11px; color: var(--text-dim);">Loading standby queue...</span>
-          </div>
-          <div style="display: flex; gap: 8px; align-items: end;">
-            <div class="form-group" style="margin-bottom: 0; flex: 1;">
-              <label class="form-label" for="standbyMinUsable">Minimum usable accounts</label>
-              <input type="number" id="standbyMinUsable" class="form-input" min="0" step="1" value="1000">
-            </div>
-            <button type="button" class="btn btn-secondary" id="btnSaveStandby" style="padding: 8px 12px;">Save</button>
-          </div>
-        </div>
 
         <div id="bulkImportProgress" style="display: none; margin-top: 16px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">

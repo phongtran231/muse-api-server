@@ -83,7 +83,6 @@ function serializeAccount(doc, live = null) {
     object: 'account',
     name: doc.name,
     enabled: doc.enabled,
-    standby: Boolean(doc.standby),
     status: live?.status || doc.status,
     group: doc.group || '',
     credential_type: doc.credential_type,
