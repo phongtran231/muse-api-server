@@ -42,6 +42,7 @@ const ISOLATION_POLICY = `# AGENTS.md
 `;
 
 const STATS_FLUSH_INTERVAL_MS = 10000;
+const ACCOUNT_SYNC_INTERVAL_MS = 30 * 1000;
 const RETIRE_CHECK_INTERVAL_MS = 5000;
 const RETIRE_MAX_WAIT_MS = 15 * 60 * 1000;
 // After requesting a VM wake over HTTP, it needs a few seconds before the WSS handshake succeeds.
@@ -206,6 +207,9 @@ class AccountPool extends EventEmitter {
 
     this.timers.push(setInterval(() => this.keepAlive().catch((err) => log.warn({ err: err.message }, 'Keep-alive cycle failed')), config.pool.keepAliveIntervalMs));
     this.timers.push(setInterval(() => this._flushStats().catch(() => {}), STATS_FLUSH_INTERVAL_MS));
+    // Other nodes (and the dashboard, served by one node) add, move, edit and delete
+    // accounts of this node's group: pick those changes up from the database.
+    this.timers.push(setInterval(() => this.syncFromDb().catch((err) => log.warn({ err: err.message }, 'Account sync failed')), ACCOUNT_SYNC_INTERVAL_MS));
     // Auto-recovery watchdog: periodically scans for accounts whose WSS is unusable/expired/disconnected
     // and automatically regenerates fresh wss:// URLs from their cookies without manual intervention.
     this.timers.push(
@@ -1232,6 +1236,43 @@ class AccountPool extends EventEmitter {
   // ---------------------------------------------------------------------------
   // Administration
   // ---------------------------------------------------------------------------
+
+  /**
+   * Aligns the pool with the database for this node's group: loads accounts that
+   * appeared (imported or moved here elsewhere), drops ones that were deleted or
+   * moved away, and reloads ones whose enabled flag, capabilities or concurrency
+   * were edited on another node.
+   */
+  async syncFromDb() {
+    if (this._syncing || this.shuttingDown) return null;
+    this._syncing = true;
+    try {
+      const docs = await Account.find({ group: config.pool.group }).select('_id enabled capabilities concurrency').lean();
+      const seen = new Set();
+      const counts = { added: 0, removed: 0, changed: 0 };
+      const same = (a, b) => JSON.stringify(a || {}) === JSON.stringify(b || {});
+      for (const doc of docs) {
+        seen.add(doc._id);
+        const entry = this.entries.get(doc._id);
+        if (!entry) {
+          if (await this.reload(doc._id)) counts.added += 1;
+        } else if (entry.doc.enabled !== doc.enabled || !same(entry.doc.capabilities, doc.capabilities) || !same(entry.doc.concurrency, doc.concurrency)) {
+          await this.reload(doc._id);
+          counts.changed += 1;
+        }
+      }
+      for (const id of [...this.entries.keys()]) {
+        if (!seen.has(id)) {
+          this.remove(id);
+          counts.removed += 1;
+        }
+      }
+      if (counts.added || counts.removed || counts.changed) log.info({ group: config.pool.group || '(default)', ...counts }, 'Account pool synced with the database');
+      return counts;
+    } finally {
+      this._syncing = false;
+    }
+  }
 
   /** Re-reads an account from the database and applies changes live. */
   async reload(accountId) {

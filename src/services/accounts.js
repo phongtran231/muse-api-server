@@ -26,6 +26,21 @@ function sessionIdOf(cookieOrCredential) {
 }
 
 /**
+ * Group for a new account: the configured group with the fewest enabled accounts
+ * (ACCOUNT_GROUPS), so imports spread evenly over the nodes; otherwise this node's.
+ */
+async function pickGroup() {
+  const groups = config.pool.groups;
+  if (!groups || groups.length < 2) return config.pool.group;
+  const counts = await Account.aggregate([
+    { $match: { group: { $in: [...groups] }, enabled: true } },
+    { $group: { _id: '$group', n: { $sum: 1 } } }
+  ]);
+  const by = new Map(counts.map((c) => [c._id, c.n]));
+  return groups.reduce((best, g) => ((by.get(g) || 0) < (by.get(best) || 0) ? g : best), groups[0]);
+}
+
+/**
  * @param {object} body  Same fields as POST /admin/api/accounts.
  * @returns {Promise<{ account: object, test: object|null }>}  `account` is the lean document (with credential/proxy).
  */
@@ -47,7 +62,7 @@ async function onboardAccount(body) {
   }
 
   const info = describeCredential(result.value);
-  const group = body.group !== undefined && body.group !== '' ? String(body.group).trim() : config.pool.group;
+  const group = body.group !== undefined && body.group !== '' ? String(body.group).trim() : await pickGroup();
   const sessionId = sessionIdOf(result.value);
   const doc = await Account.create({
     name,
@@ -86,4 +101,4 @@ async function onboardAccount(body) {
   return { account, test };
 }
 
-module.exports = { onboardAccount, sessionIdOf };
+module.exports = { onboardAccount, sessionIdOf, pickGroup };

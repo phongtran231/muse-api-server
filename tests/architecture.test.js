@@ -1313,3 +1313,54 @@ test('stream text parsing emits the same events for any chunking and stays linea
   assert.equal(res.body, big);
   assert.ok(ms < 200, `took ${ms} ms`);
 });
+
+test('new accounts join the configured group with the fewest enabled accounts', async () => {
+  const prev = process.env.ACCOUNT_GROUPS;
+  const counts = [{ _id: '', n: 5 }, { _id: 'n2', n: 3 }, { _id: 'n3', n: 4 }];
+  const load = (groups) => {
+    const cfg = { ...config, pool: { ...config.pool, group: '', groups } };
+    return isolated('src/services/accounts.js', {
+      '../config': cfg,
+      '../models': { Account: { aggregate: async () => counts } },
+      './pool': { pool: {} },
+      './proxyPool': { list: () => [] },
+      '../core/credentials': {}
+    });
+  };
+  assert.equal(await load(Object.freeze(['', 'n2', 'n3'])).pickGroup(), 'n2');
+  counts.splice(0, counts.length, { _id: '', n: 2 }, { _id: 'n2', n: 2 });
+  assert.equal(await load(Object.freeze(['', 'n2', 'n3'])).pickGroup(), 'n3'); // a group with no accounts yet
+  assert.equal(await load(null).pickGroup(), ''); // single node: its own group
+  if (prev === undefined) delete process.env.ACCOUNT_GROUPS; else process.env.ACCOUNT_GROUPS = prev;
+});
+
+test('each node syncs its group from the database: new, removed and edited accounts', async () => {
+  const db = new Map([
+    ['a', { _id: 'a', group: '', enabled: true, capabilities: { video: true }, concurrency: { video: null } }],
+    ['b', { _id: 'b', group: '', enabled: true, capabilities: { video: true }, concurrency: { video: null } }]
+  ]);
+  const q = (v) => ({ select: () => ({ lean: async () => v }) });
+  const { AccountPool } = isolated('src/services/pool.js', {
+    '../config': { ...config, pool: { ...config.pool, group: '' } },
+    '../models': {
+      CAPABILITIES: ['chat', 'image', 'video'],
+      Account: {
+        updateOne: async () => ({}),
+        find: (f) => q([...db.values()].filter((d) => d.group === f.group).map((d) => ({ ...d }))),
+        findById: (id) => q(db.has(id) ? { ...db.get(id) } : null)
+      }
+    }
+  });
+  const pool = new AccountPool();
+  await pool.reload('a');
+  await pool.reload('b');
+  db.set('c', { _id: 'c', group: '', enabled: true, capabilities: { video: true }, concurrency: { video: null } }); // imported by another node
+  db.set('b', { ...db.get('b'), group: 'n2' }); // moved to another node
+  db.set('a', { ...db.get('a'), enabled: false }); // disabled on the dashboard (node 1)
+  const counts = await pool.syncFromDb();
+  assert.deepEqual({ ...counts }, { added: 1, removed: 1, changed: 1 });
+  assert.deepEqual([...pool.entries.keys()].sort(), ['a', 'c']);
+  assert.equal(pool.entries.get('a').doc.enabled, false);
+  assert.deepEqual({ ...(await pool.syncFromDb()) }, { added: 0, removed: 0, changed: 0 }); // nothing changed
+  pool.shuttingDown = true;
+});

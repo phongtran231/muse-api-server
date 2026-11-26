@@ -195,6 +195,14 @@ const config = Object.freeze({
   pool: Object.freeze({
     // Only accounts whose `group` matches are loaded by this node (horizontal sharding).
     group: str('ACCOUNT_GROUP', ''),
+    // Every ACCOUNT_GROUP served by the nodes of this deployment, comma separated
+    // ("" = the default group, e.g. ",n2,n3"). New accounts go to the group with
+    // the fewest enabled accounts. Unset: new accounts join this node's group.
+    groups: (() => {
+      const raw = process.env.ACCOUNT_GROUPS;
+      if (raw === undefined || raw.trim() === '') return null;
+      return Object.freeze([...new Set(raw.split(',').map((g) => g.trim()))]);
+    })(),
     defaultConcurrency: Object.freeze({
       chat: int('ACCOUNT_CHAT_CONCURRENCY', 4, { min: 1, max: 2000 }),
       image: int('ACCOUNT_IMAGE_CONCURRENCY', 2, { min: 1, max: 2000 }),
