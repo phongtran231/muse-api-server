@@ -9,7 +9,9 @@
  *    random entry; empty means jobs connect direct.
  *
  * Every entry is health-checked once a minute (a request to muse.ai through
- * it). A failed check takes the entry out of the random pick for 5 minutes;
+ * it). A check that finds the proxy dead (407, refused, unknown / unreachable
+ * host, no response within 15 s) takes the entry out of the random pick for 5 minutes;
+ * a busy proxy (closes new tunnels while full) stays in;
  * afterwards it is checked again and only returns to the pick when that check
  * succeeds, so expiring short-term proxies hand over to the remaining ones
  * automatically. With no healthy entry the pick is null, i.e. a direct
@@ -155,7 +157,12 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
       if (prev.alive === false) log.info({ pool: name, proxy: label(proxy) }, 'Proxy is reachable again; back in the pool');
       health.set(proxy, { alive: true, failures: 0, recent_failures: [], checked_at: new Date().toISOString(), error: null, disabled_until: null });
     } catch (err) {
-      disable(proxy, err.code === 'ERR_CANCELED' ? `no response within ${CHECK_TIMEOUT_MS / 1000}s` : (err.code || err.message), { immediate: true });
+      const error = err.code === 'ERR_CANCELED' ? `no response within ${CHECK_TIMEOUT_MS / 1000}s` : String(err.code || err.message).slice(0, 200);
+      // A full proxy closes new tunnels ("ended before receiving CONNECT response",
+      // resets) yet keeps serving its open connections; turning it off would push
+      // every job to a direct connection. Only a dead or silent proxy is turned off.
+      if (err.code === 'ERR_CANCELED' || isProxyDead(err)) disable(proxy, error, { immediate: true });
+      else health.set(proxy, { ...prev, checked_at: new Date().toISOString(), error });
     }
   }
 

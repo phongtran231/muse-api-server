@@ -1197,7 +1197,11 @@ test('a proxy reported unreachable is skipped for 5 minutes, even by health chec
   class FakeDate extends Date { static now() { return Date.now() + offset; } }
   const { createProxyPool } = isolated('src/services/proxyPool.js', {
     '../models': { Setting: { findOne: () => ({ lean: async () => null }), findOneAndUpdate: async () => ({}) } },
-    axios: { get: async () => { if (probeFails) throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); return { status: 200 }; } },
+    axios: { get: async () => {
+      if (probeFails === 'busy') throw new Error('Proxy connection ended before receiving CONNECT response');
+      if (probeFails) throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+      return { status: 200 };
+    } },
     'https-proxy-agent': { HttpsProxyAgent: class {} }
   }, '', { AbortSignal, Date: FakeDate });
   const pool = createProxyPool({ settingKey: 't', description: 't', name: 'test' });
@@ -1226,7 +1230,12 @@ test('a proxy reported unreachable is skipped for 5 minutes, even by health chec
   await pool.checkAll();
   const seen = new Set(Array.from({ length: 60 }, () => pool.pick()));
   assert.ok(seen.has(a) && seen.has(b), 'a is back after a passing check');
-  // A single failed health check turns a proxy off right away.
+  // A busy proxy failing a check (full, closes new tunnels) stays in.
+  probeFails = 'busy';
+  await pool.checkAll();
+  assert.ok([a, b].includes(pool.pick()));
+  assert.ok(pool.status().every((s) => s.alive && /CONNECT/.test(s.error)));
+  // A single dead health check turns a proxy off right away.
   probeFails = true;
   await pool.checkAll();
   assert.equal(pool.pick(), null);
