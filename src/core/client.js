@@ -1072,16 +1072,30 @@ class MuseClient extends EventEmitter {
     // The VM returns at most 2 MB per /fs/read, and each read is a full round trip
     // (~0.8s through a job proxy): 2 MB reads download ~6x faster than 128 KB ones
     // (measured 163 KB/s -> ~1 MB/s). The loop still stops on `eof`, never on a short read.
-    const chunkSize = 2 * 1024 * 1024;
+    // A read that times out (slow proxy / busy VM) is retried at the same offset
+    // with a smaller chunk instead of failing a job whose media already exists.
+    let chunkSize = 2 * 1024 * 1024;
+    const minChunkSize = 256 * 1024;
+    const maxReadRetries = 4;
+    let readRetries = 0;
     const buffers = [];
 
     while (offset <= maxBytes) {
       signal?.throwIfAborted();
-      const res = await this.sendRequest('POST', '/fs/read', {
-        path: cleanPath,
-        offset,
-        len: Math.min(chunkSize, maxBytes - offset + 1)
-      }, [], false, null, { signal });
+      let res;
+      try {
+        res = await this.sendRequest('POST', '/fs/read', {
+          path: cleanPath,
+          offset,
+          len: Math.min(chunkSize, maxBytes - offset + 1)
+        }, [], false, null, { signal });
+      } catch (err) {
+        if (signal?.aborted || !/timed out/i.test(err?.message || '') || readRetries >= maxReadRetries) throw err;
+        readRetries += 1;
+        chunkSize = Math.max(minChunkSize, Math.floor(chunkSize / 2));
+        console.warn(`[Muse] /fs/read timed out at offset ${offset}; retrying with ${Math.round(chunkSize / 1024)} KB reads (retry ${readRetries}/${maxReadRetries}).`);
+        continue;
+      }
 
       if (res.status !== 200) {
         throw new Error(`Failed to read file ${cleanPath}: HTTP ${res.status} ${res.body}`);

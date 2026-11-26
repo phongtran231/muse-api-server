@@ -1252,3 +1252,27 @@ test('a proxy reported unreachable is skipped for 5 minutes, even by health chec
   assert.ok([a, b].includes(pool.pick()));
   pool.stop();
 });
+
+test('a timed-out /fs/read is retried at the same offset with smaller reads', async () => {
+  const c = client();
+  const file = Buffer.alloc(3 * 1024 * 1024, 7);
+  const calls = [];
+  let timeouts = 1;
+  c.sendRequest = async (method, path, body) => {
+    calls.push({ offset: body.offset, len: body.len });
+    if (timeouts > 0) { timeouts -= 1; throw new Error('Upstream request (POST /fs/read) timed out after 60s.'); }
+    const part = file.subarray(body.offset, body.offset + body.len);
+    return { status: 200, body: JSON.stringify({ ok: true, result: { data_base64: part.toString('base64'), len: part.length, eof: body.offset + part.length >= file.length } }) };
+  };
+  const out = await c.readFile('/out.mp4');
+  assert.equal(out.length, file.length);
+  assert.deepEqual(calls.slice(0, 2), [{ offset: 0, len: 2 * 1024 * 1024 }, { offset: 0, len: 1024 * 1024 }]);
+  // Other errors still fail at once.
+  c.sendRequest = async () => { throw new Error('socket closed'); };
+  await assert.rejects(c.readFile('/out.mp4'), /socket closed/);
+  // Endless timeouts give up after the retry budget.
+  let n = 0;
+  c.sendRequest = async () => { n += 1; throw new Error('Upstream request (POST /fs/read) timed out after 60s.'); };
+  await assert.rejects(c.readFile('/out.mp4'), /timed out/);
+  assert.equal(n, 5);
+});
