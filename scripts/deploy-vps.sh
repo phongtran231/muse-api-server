@@ -30,17 +30,24 @@ while [ "$waited" -lt "$JOB_WAIT_SECONDS" ] && [ "$(running_jobs)" -gt 0 ]; do
   waited=$((waited + 5))
 done
 
-docker compose up -d api
+# Every API node of this host: "api" plus any "api2", "api3"... a host-specific
+# compose override adds (each with its own ACCOUNT_GROUP). They share the image.
+API_SERVICES=$(docker compose config --services | grep -E '^api[0-9]*$' | tr '\n' ' ')
+docker compose up -d $API_SERVICES
 
-waited=0
-until [ "$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER" 2>/dev/null)" = healthy ]; do
-  if [ "$waited" -ge "$HEALTH_WAIT_SECONDS" ]; then
-    echo "Container is not healthy after ${HEALTH_WAIT_SECONDS}s. Last logs:"
-    docker logs --tail 80 "$CONTAINER" 2>&1 | sed -E 's#://[^@ /]*@#://***@#g'
-    exit 1
-  fi
-  sleep 5
-  waited=$((waited + 5))
+for service in $API_SERVICES; do
+  container=$(docker compose ps -q "$service")
+  [ "$service" = api ] && [ -z "$container" ] && container=$CONTAINER
+  waited=0
+  until [ "$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null)" = healthy ]; do
+    if [ "$waited" -ge "$HEALTH_WAIT_SECONDS" ]; then
+      echo "Service $service is not healthy after ${HEALTH_WAIT_SECONDS}s. Last logs:"
+      docker logs --tail 80 "$container" 2>&1 | sed -E 's#://[^@ /]*@#://***@#g'
+      exit 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
 done
 
-echo "Deployed and healthy: $(git log --oneline -1)"
+echo "Deployed and healthy ($API_SERVICES): $(git log --oneline -1)"

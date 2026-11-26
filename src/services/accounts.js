@@ -56,7 +56,8 @@ async function onboardAccount(body) {
     wss_expires_at: info.wss_expires_at ? new Date(info.wss_expires_at) : null,
     proxy,
     group,
-    enabled: body.enabled !== false,
+    enabled: body.standby ? false : body.enabled !== false,
+    standby: Boolean(body.standby),
     capabilities: {
       chat: body.capabilities?.chat !== false,
       image: body.capabilities?.image !== false,

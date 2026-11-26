@@ -222,6 +222,7 @@ async function loadOverview() {
         <span class="badge badge-degraded">${data.accounts?.degraded || 0} Degraded</span>
         <span class="badge badge-expired">${data.accounts?.expired || 0} Expired</span>
         <span class="badge badge-offline">${data.accounts?.disabled || 0} Disabled</span>
+        <span class="badge badge-offline" title="Usable for video / waiting in the standby queue">${data.accounts?.usable_video ?? 0} Usable · ${data.accounts?.standby || 0} Standby</span>
       `;
     }
 
@@ -374,6 +375,7 @@ function renderAccountRow(a, index) {
   const isConnected = a.live?.connected;
   const isRenewing = a.live?.is_renewing;
   let statusBadge = `<span class="badge badge-${a.status}"><span class="dot-pulse"></span>${a.status}</span>`;
+  if (a.standby) statusBadge = '<span class="badge badge-offline" title="Waiting in the standby queue">standby</span>';
   if (isRenewing) {
     statusBadge = `<span class="badge" style="background: rgba(245, 158, 11, 0.18); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.3);"><span class="dot-pulse" style="background: #F59E0B;"></span>Auto-Renewing WSS</span>`;
   }
@@ -1150,7 +1152,7 @@ function renderBulkImport(batch) {
   document.getElementById('bulkImportProgress').style.display = 'block';
   const c = batch.counts || {};
   const pending = (c.queued || 0) + (c.processing || 0) + (c.waiting_vm || 0);
-  document.getElementById('bulkImportTitle').textContent = `Batch ${batch.id} · ${formatDate(batch.created_at)} · every ${batch.interval_sec}s` + (batch.redeem ? ` · HTTP redeem${batch.initial_code ? ` (init: ${batch.initial_code})` : ''}` : '');
+  document.getElementById('bulkImportTitle').textContent = `Batch ${batch.id} · ${formatDate(batch.created_at)} · every ${batch.interval_sec}s` + (batch.redeem ? ` · HTTP redeem${batch.initial_code ? ` (init: ${batch.initial_code})` : ''}` : '') + (batch.standby ? ' · into standby queue' : '');
   document.getElementById('bulkImportCounts').textContent =
     `${c.done || 0} done · ${c.failed || 0} failed · ${c.skipped || 0} skipped · ${c.processing || 0} processing · ${c.queued || 0} queued` +
     (c.waiting_vm ? ` · ${c.waiting_vm} waiting for a Meta VM (retried every 10 min)` : '') +
@@ -1205,7 +1207,37 @@ function stopBulkImportPolling() {
   bulkImportTimer = null;
 }
 
+function renderStandbyStatus(s) {
+  const el = document.getElementById('standbyStatus');
+  if (!el || !s) return;
+  const last = s.last_run ? ` · last check ${new Date(s.last_run.at).toLocaleTimeString()}${s.last_run.released ? `, released ${s.last_run.released}` : ''}` : '';
+  el.textContent = `${s.standby} waiting · ${s.usable} usable for video (minimum ${s.min_usable})${last}`;
+  const input = document.getElementById('standbyMinUsable');
+  if (input && document.activeElement !== input) input.value = s.min_usable;
+}
+
+async function loadStandbyStatus() {
+  try {
+    renderStandbyStatus(await api('/standby'));
+  } catch (err) {
+    const el = document.getElementById('standbyStatus');
+    if (el) el.textContent = `Standby queue unavailable: ${err.message}`;
+  }
+}
+
+document.getElementById('btnSaveStandby')?.addEventListener('click', async () => {
+  const value = parseInt(document.getElementById('standbyMinUsable').value, 10);
+  if (!Number.isFinite(value) || value < 0) return showToast('Enter a minimum of 0 or more.', 'error');
+  try {
+    renderStandbyStatus(await api('/standby', { method: 'PUT', body: { min_usable: value } }));
+    showToast(`Standby minimum set to ${value}.`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+});
+
 async function loadBulkImportHistory() {
+  loadStandbyStatus();
   const box = document.getElementById('bulkImportHistory');
   try {
     const res = await api('/accounts/import');
@@ -1270,6 +1302,7 @@ document.getElementById('formBulkImport')?.addEventListener('submit', async (e) 
         prefix: document.getElementById('bulkPrefix').value.trim(),
         validate: document.getElementById('bulkValidate').checked,
         redeem: document.getElementById('bulkRedeem').checked,
+        standby: document.getElementById('bulkStandby').checked,
         initial_code: document.getElementById('bulkInitialCode').value.trim() || undefined
       }
     });
