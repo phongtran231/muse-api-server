@@ -35,6 +35,9 @@ jobs:
         run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes "$VPS_USER@$VPS_HOST" deploy
 
   deploy-inmu:
+    # Disabled 2026-11-26: inmu.vn91.net moved to the main VPS (job `deploy`); the old
+    # host 173.208.243.163 is retired and must not be started again by CI.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
