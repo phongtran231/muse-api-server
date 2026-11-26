@@ -1074,7 +1074,9 @@ class MuseClient extends EventEmitter {
     // (measured 163 KB/s -> ~1 MB/s). The loop still stops on `eof`, never on a short read.
     // A read that times out (slow proxy / busy VM) is retried at the same offset
     // with a smaller chunk instead of failing a job whose media already exists.
-    let chunkSize = 2 * 1024 * 1024;
+    // Since 2026-11-26 13:15 UTC, 2 MB reads hang until the 60s timeout on almost
+    // every job while 1 MB reads succeed at once, so reads start at 1 MB.
+    let chunkSize = 1024 * 1024;
     const minChunkSize = 256 * 1024;
     const maxReadRetries = 4;
     let readRetries = 0;

@@ -1266,7 +1266,7 @@ test('a timed-out /fs/read is retried at the same offset with smaller reads', as
   };
   const out = await c.readFile('/out.mp4');
   assert.equal(out.length, file.length);
-  assert.deepEqual(calls.slice(0, 2), [{ offset: 0, len: 2 * 1024 * 1024 }, { offset: 0, len: 1024 * 1024 }]);
+  assert.deepEqual(calls.slice(0, 2), [{ offset: 0, len: 1024 * 1024 }, { offset: 0, len: 512 * 1024 }]);
   // Other errors still fail at once.
   c.sendRequest = async () => { throw new Error('socket closed'); };
   await assert.rejects(c.readFile('/out.mp4'), /socket closed/);
