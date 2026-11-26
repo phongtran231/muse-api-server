@@ -41,6 +41,19 @@ function isProxyFailure(err) {
   return /\b407\b|proxy|tunnel|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ESOCKETTIMEDOUT|socket hang up|ERR_CANCELED/i.test(msg);
 }
 
+/**
+ * Failures in real use that prove the proxy is unusable (bad / expired auth,
+ * refused, unknown or unreachable host). A proxy that is merely busy closes new
+ * tunnels ("ended before receiving CONNECT response", resets, timeouts) when
+ * hundreds of sockets reconnect at once (e.g. after a restart); that only moves
+ * the connection to another proxy and never disables it. The 2-minute health
+ * check, made on a quiet single connection, counts every failure.
+ */
+function isProxyDead(err) {
+  const msg = `${err?.code || ''} ${err?.message || ''}`;
+  return /\b407\b|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH/i.test(msg);
+}
+
 function createProxyPool({ settingKey, description, name, onApply = () => {} }) {
   let proxies = [];
   const health = new Map(); // proxy -> { alive, failures, checked_at, error, disabled_until }
@@ -70,10 +83,14 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     health.set(proxy, entry);
   }
 
-  /** Called by users of a picked proxy when it failed; only proxy-level failures disable it. */
+  /**
+   * Called by users of a picked proxy when it failed. Returns true when the failure
+   * was the proxy's (so the caller should try another one); only hard failures
+   * (isProxyDead) count toward turning it off.
+   */
   function reportFailure(proxy, err) {
     if (!proxy || !proxies.includes(proxy) || !isProxyFailure(err)) return false;
-    disable(proxy, String(err?.code || err?.message || err).slice(0, 200));
+    if (isProxyDead(err)) disable(proxy, String(err?.code || err?.message || err).slice(0, 200));
     return true;
   }
 
@@ -219,4 +236,4 @@ const jobPool = createProxyPool({
   name: 'Job proxy pool'
 });
 
-module.exports = { ...wakePool, job: jobPool, createProxyPool, isProxyFailure };
+module.exports = { ...wakePool, job: jobPool, createProxyPool, isProxyFailure, isProxyDead };

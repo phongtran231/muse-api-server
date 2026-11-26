@@ -1202,9 +1202,13 @@ test('a proxy reported unreachable is skipped for 30 minutes, even by health che
   const [a, b] = await pool.save('10.0.0.1:8080:u:p\n10.0.0.2:8080:u:p');
   await pool.checkAll();
   assert.equal(pool.reportFailure(a, new Error('Unexpected server response: 429')), false); // Meta's answer, proxy fine
-  // One hiccup is not enough; the third failure within 10 minutes turns it off.
+  // A busy proxy (reconnect storm) only moves the connection elsewhere, however often.
+  for (let i = 0; i < 20; i++) assert.equal(pool.reportFailure(a, new Error('Proxy connection ended before receiving CONNECT response')), true);
   assert.equal(pool.reportFailure(a, new Error('read ECONNRESET')), true);
-  assert.equal(pool.reportFailure(a, new Error('getaddrinfo EAI_AGAIN')), true);
+  assert.ok(pool.status().every((s) => !s.disabled_until));
+  // Hard failures count: the third within 10 minutes turns it off.
+  assert.equal(pool.reportFailure(a, new Error('Unexpected server response: 407')), true);
+  assert.equal(pool.reportFailure(a, new Error('getaddrinfo ENOTFOUND proxy.example')), true);
   assert.ok([a, b].includes(pool.pick()) && pool.status().every((s) => !s.disabled_until));
   assert.equal(pool.reportFailure(a, new Error('connect ECONNREFUSED 10.0.0.1:8080')), true);
   for (let i = 0; i < 40; i++) assert.equal(pool.pick(), b);
