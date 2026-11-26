@@ -1276,3 +1276,40 @@ test('a timed-out /fs/read is retried at the same offset with smaller reads', as
   await assert.rejects(c.readFile('/out.mp4'), /timed out/);
   assert.equal(n, 5);
 });
+
+test('stream text parsing emits the same events for any chunking and stays linear on one-line bodies', () => {
+  // Reference: the previous implementation (re-split the whole buffer on every chunk).
+  const oldEvents = (chunks) => {
+    let buffer = ''; const out = [];
+    for (const text of chunks) {
+      buffer += text;
+      const lines = buffer.split('\n'); buffer = lines.pop();
+      for (const line of lines) { const t = line.trim(); if (!t) continue; try { out.push(JSON.parse(t)); } catch (e) { /* skip */ } }
+    }
+    return out;
+  };
+  const newEvents = (chunks) => {
+    const c = client(); const out = [];
+    c.handleEvent = (e) => out.push(e);
+    const stream = { chunks: [], buffer: '' };
+    for (const t of chunks) c.processStreamText(stream, t);
+    return { out, body: stream.chunks.join('') };
+  };
+  const body = [1, 2, 3, 4, 5].map((i) => JSON.stringify({ event: 'delta.text_append', seq: i, payload: { text: `p${i}\n` } })).join('\n') + '\nnot json\n\n' + JSON.stringify({ seq: 9 }) + '\n{"partial":';
+  let seed = 7; const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+  for (let run = 0; run < 200; run++) {
+    const chunks = []; let i = 0;
+    while (i < body.length) { const n = 1 + Math.floor(rnd() * 40); chunks.push(body.slice(i, i + n)); i += n; }
+    const got = newEvents(chunks);
+    assert.equal(JSON.stringify(got.out), JSON.stringify(oldEvents(chunks)));
+    assert.equal(got.body, body);
+  }
+  // A 1.4 MB single-line response in 16 KB frames must not be quadratic.
+  const big = JSON.stringify({ ok: true, result: { data_base64: 'A'.repeat(1400000), eof: true } });
+  const frames = []; for (let i = 0; i < big.length; i += 16384) frames.push(big.slice(i, i + 16384));
+  const t0 = process.hrtime.bigint();
+  const res = newEvents(frames);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.equal(res.body, big);
+  assert.ok(ms < 200, `took ${ms} ms`);
+});

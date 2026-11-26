@@ -924,16 +924,20 @@ class MuseClient extends EventEmitter {
 
   processStreamText(stream, text) {
     if (!text) return;
-    if (stream) {
-      stream.chunks.push(text);
-      stream.buffer += text;
-    } else {
-      this.globalEventBuffer = (this.globalEventBuffer || '') + text;
+    if (stream) stream.chunks.push(text);
+    const pending = stream ? stream.buffer : (this.globalEventBuffer || '');
+    // Only cut lines when this chunk completes one. Large single-line bodies
+    // (e.g. a /fs/read response: ~1.4 MB of base64 in hundreds of frames) used to
+    // be re-split on every frame, which made each download quadratic and, under
+    // load, saturated the event loop for every job on this node.
+    const nl = text.lastIndexOf('\n');
+    if (nl === -1) {
+      if (stream) stream.buffer = pending + text;
+      else this.globalEventBuffer = pending + text;
+      return;
     }
-
-    const buf = stream ? stream.buffer : this.globalEventBuffer;
-    const lines = buf.split('\n');
-    const remainder = lines.pop();
+    const lines = (pending + text.slice(0, nl)).split('\n');
+    const remainder = text.slice(nl + 1);
     if (stream) {
       stream.buffer = remainder;
     } else {
