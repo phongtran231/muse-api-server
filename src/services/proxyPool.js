@@ -8,11 +8,12 @@
  *  - "job_proxy_pool" (`.job`): the job WebSocket. Each connection picks a
  *    random entry; empty means jobs connect direct.
  *
- * Every entry is health-checked (a request to muse.ai through it). Entries
- * that fail twice in a row (expired, wrong password -> 407, unreachable) are
- * left out of the random pick until a check succeeds again, so expiring
- * short-term proxies hand over to the remaining ones automatically. With no
- * healthy entry the pick is null, i.e. a direct connection.
+ * Every entry is health-checked once a minute (a request to muse.ai through
+ * it). A failed check takes the entry out of the random pick for 5 minutes;
+ * afterwards it is checked again and only returns to the pick when that check
+ * succeeds, so expiring short-term proxies hand over to the remaining ones
+ * automatically. With no healthy entry the pick is null, i.e. a direct
+ * connection.
  */
 
 const { Setting } = require('../models');
@@ -20,13 +21,13 @@ const { normalizeProxy, setProxyPoolPicker, POOL_PROXY } = require('../core/cred
 const { logger } = require('../logger');
 
 const log = logger.child({ component: 'proxy-pool' });
-const CHECK_INTERVAL_MS = 2 * 60 * 1000;
+const CHECK_INTERVAL_MS = 60 * 1000;
 const CHECK_TIMEOUT_MS = 15000;
-// A proxy that cannot be reached (health check or real use) FAILURES_TO_DISABLE
-// times within FAILURE_WINDOW_MS sits out DISABLE_MS, then is checked again. A
-// single reset / DNS hiccup (common when hundreds of sockets open at startup)
-// does not count as dead.
-const DISABLE_MS = 30 * 60 * 1000;
+// A failed health check takes the proxy out for DISABLE_MS; it comes back only
+// after a later check succeeds. Hard failures in real use need
+// FAILURES_TO_DISABLE within FAILURE_WINDOW_MS, so a single reset / DNS hiccup
+// (common when hundreds of sockets open at startup) does not count as dead.
+const DISABLE_MS = 5 * 60 * 1000;
 const FAILURES_TO_DISABLE = 3;
 const FAILURE_WINDOW_MS = 10 * 60 * 1000;
 
@@ -47,7 +48,7 @@ function isProxyFailure(err) {
  * tunnels ("ended before receiving CONNECT response", resets, timeouts) when
  * hundreds of sockets reconnect at once (e.g. after a restart); that only moves
  * the connection to another proxy and never disables it. The 2-minute health
- * check, made on a quiet single connection, counts every failure.
+ * check, made on a quiet single connection, disables on any failure.
  */
 function isProxyDead(err) {
   const msg = `${err?.code || ''} ${err?.message || ''}`;
@@ -67,18 +68,22 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     return !isDisabled(proxy) && health.get(proxy)?.alive !== false; // unchecked entries count as alive
   }
 
-  /** Records a failure; the FAILURES_TO_DISABLE-th within the window takes the proxy out for DISABLE_MS. */
-  function disable(proxy, error) {
+  /**
+   * Records a failure; the FAILURES_TO_DISABLE-th within the window (or any
+   * failure when `immediate`, i.e. a failed health check) takes the proxy out
+   * for DISABLE_MS.
+   */
+  function disable(proxy, error, { immediate = false } = {}) {
     if (isDisabled(proxy)) return;
     const now = Date.now();
     const prev = health.get(proxy) || { alive: true };
     const recent = [...(prev.recent_failures || []), now].filter((t) => now - t < FAILURE_WINDOW_MS);
     const entry = { ...prev, failures: recent.length, recent_failures: recent, checked_at: new Date(now).toISOString(), error };
-    if (recent.length >= FAILURES_TO_DISABLE) {
+    if (immediate || recent.length >= FAILURES_TO_DISABLE) {
       entry.alive = false;
       entry.disabled_until = new Date(now + DISABLE_MS).toISOString();
       entry.recent_failures = [];
-      log.warn({ pool: name, proxy: label(proxy), err: error, failures: recent.length, until: entry.disabled_until }, 'Proxy unreachable; disabled for 30 minutes');
+      log.warn({ pool: name, proxy: label(proxy), err: error, failures: recent.length, until: entry.disabled_until }, `Proxy unreachable; disabled for ${DISABLE_MS / 60000} minutes`);
     }
     health.set(proxy, entry);
   }
@@ -143,14 +148,14 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
   }
 
   async function checkOne(proxy) {
-    if (isDisabled(proxy)) return; // sitting out its 30 minutes; checked again afterwards
+    if (isDisabled(proxy)) return; // sitting out DISABLE_MS; must pass a check afterwards to return
     const prev = health.get(proxy) || { alive: true, failures: 0 };
     try {
       await probe(proxy);
       if (prev.alive === false) log.info({ pool: name, proxy: label(proxy) }, 'Proxy is reachable again; back in the pool');
       health.set(proxy, { alive: true, failures: 0, recent_failures: [], checked_at: new Date().toISOString(), error: null, disabled_until: null });
     } catch (err) {
-      disable(proxy, err.code === 'ERR_CANCELED' ? `no response within ${CHECK_TIMEOUT_MS / 1000}s` : (err.code || err.message));
+      disable(proxy, err.code === 'ERR_CANCELED' ? `no response within ${CHECK_TIMEOUT_MS / 1000}s` : (err.code || err.message), { immediate: true });
     }
   }
 

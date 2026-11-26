@@ -1180,7 +1180,7 @@ test('top-up credits keep an account usable after its weekly allowance is used u
   assert.equal(at({ usage_percent: 40, topup_balance: 0, topup_status: 'depleted', blocked: false }), false);
 });
 
-test('an unreachable proxy is turned off for 30 minutes; upstream errors through it are not its fault', () => {
+test('an unreachable proxy is turned off for 5 minutes; upstream errors through it are not its fault', () => {
   const { createProxyPool, isProxyFailure } = isolated('src/services/proxyPool.js', {
     '../models': { Setting: { findOne: () => ({ lean: async () => null }), findOneAndUpdate: async () => ({}) } }
   });
@@ -1191,13 +1191,15 @@ test('an unreachable proxy is turned off for 30 minutes; upstream errors through
 
 });
 
-test('a proxy reported unreachable is skipped for 30 minutes, even by health checks', async () => {
+test('a proxy reported unreachable is skipped for 5 minutes, even by health checks', async () => {
   let probeFails = false;
+  let offset = 0;
+  class FakeDate extends Date { static now() { return Date.now() + offset; } }
   const { createProxyPool } = isolated('src/services/proxyPool.js', {
     '../models': { Setting: { findOne: () => ({ lean: async () => null }), findOneAndUpdate: async () => ({}) } },
     axios: { get: async () => { if (probeFails) throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); return { status: 200 }; } },
     'https-proxy-agent': { HttpsProxyAgent: class {} }
-  }, '', { AbortSignal });
+  }, '', { AbortSignal, Date: FakeDate });
   const pool = createProxyPool({ settingKey: 't', description: 't', name: 'test' });
   const [a, b] = await pool.save('10.0.0.1:8080:u:p\n10.0.0.2:8080:u:p');
   await pool.checkAll();
@@ -1206,7 +1208,7 @@ test('a proxy reported unreachable is skipped for 30 minutes, even by health che
   for (let i = 0; i < 20; i++) assert.equal(pool.reportFailure(a, new Error('Proxy connection ended before receiving CONNECT response')), true);
   assert.equal(pool.reportFailure(a, new Error('read ECONNRESET')), true);
   assert.ok(pool.status().every((s) => !s.disabled_until));
-  // Hard failures count: the third within 10 minutes turns it off.
+  // Hard failures in real use count: the third within 10 minutes turns it off.
   assert.equal(pool.reportFailure(a, new Error('Unexpected server response: 407')), true);
   assert.equal(pool.reportFailure(a, new Error('getaddrinfo ENOTFOUND proxy.example')), true);
   assert.ok([a, b].includes(pool.pick()) && pool.status().every((s) => !s.disabled_until));
@@ -1216,13 +1218,28 @@ test('a proxy reported unreachable is skipped for 30 minutes, even by health che
   for (let i = 0; i < 40; i++) assert.equal(pool.pick(), b);
   const off = pool.status().find((s) => s.proxy.startsWith('10.0.0.1'));
   const mins = (Date.parse(off.disabled_until) - Date.now()) / 60000;
-  assert.ok(mins > 29 && mins <= 30, `disabled for ${mins} min`);
+  assert.ok(mins > 4.9 && mins <= 5, `disabled for ${mins} min`);
   assert.equal(pool.hasUsable(), true);
+  // After 5 minutes it is not used until a check passes again.
+  offset = 5 * 60 * 1000 + 1000;
+  for (let i = 0; i < 40; i++) assert.equal(pool.pick(), b);
+  await pool.checkAll();
+  const seen = new Set(Array.from({ length: 60 }, () => pool.pick()));
+  assert.ok(seen.has(a) && seen.has(b), 'a is back after a passing check');
+  // A single failed health check turns a proxy off right away.
   probeFails = true;
-  await pool.checkAll(); await pool.checkAll();
-  assert.equal(pool.pick(), b); // two failed checks: still in
-  await pool.checkAll(); // third failure turns b off too
+  await pool.checkAll();
   assert.equal(pool.pick(), null);
   assert.equal(pool.hasUsable(), false); // all off: connections go direct, so the 429 pause applies
+  // Still failing when the 5 minutes are up: stays off for another 5.
+  offset += 5 * 60 * 1000 + 1000;
+  await pool.checkAll();
+  assert.equal(pool.pick(), null);
+  probeFails = false;
+  await pool.checkAll(); // still sitting out: not checked yet
+  assert.equal(pool.pick(), null);
+  offset += 5 * 60 * 1000 + 1000;
+  await pool.checkAll();
+  assert.ok([a, b].includes(pool.pick()));
   pool.stop();
 });

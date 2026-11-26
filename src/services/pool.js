@@ -862,7 +862,7 @@ class AccountPool extends EventEmitter {
       if (force) client.forceRefresh = true;
       return client;
     };
-    // A job proxy that cannot be reached is disabled for 30 min and another one
+    // A job proxy that cannot be reached is disabled for 5 min and another one
     // is tried right away (not a reason to renew the token).
     const connectClient = async () => {
       for (let attempt = 0; ; attempt += 1) {
@@ -1114,7 +1114,7 @@ class AccountPool extends EventEmitter {
         if (options.proxy === undefined) entry.renewedProxy = proxy; // the next _connect uses the same IP
         result = await fetchWssFromCookie(cred.cookie, proxy, { ...options, proxy });
       } catch (err) {
-        // The add/wake proxy itself was unreachable: disable it for 30 min (next try picks another).
+        // The add/wake proxy itself was unreachable: disable it for 5 min (next try picks another).
         if (proxyPool.reportFailure(proxy, err)) entry.renewedProxy = undefined;
         if (err.code === 'MUSE_VM_SUSPENDED') {
           // Not a failure: Meta suspends idle VMs. Woken on demand (see _ensureClient).

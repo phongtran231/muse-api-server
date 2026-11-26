@@ -1202,7 +1202,7 @@
             <span id="proxyPoolCount" style="font-size: 11px; color: var(--text-dim);"></span>
           </label>
           <textarea id="proxyPoolList" class="form-textarea font-mono" rows="8" placeholder="host:port:user:pass&#10;http://user:pass@host:port"></textarea>
-          <span style="font-size: 11px; color: var(--text-dim);">Used only for the muse.ai HTTP calls that add and wake accounts (session, VM wake, token). Accounts without their own proxy pick a random entry. Proxies are checked every 2 minutes; one that cannot be reached (check or real use) is turned off for 30 minutes, then checked again.</span>
+          <span style="font-size: 11px; color: var(--text-dim);">Used only for the muse.ai HTTP calls that add and wake accounts (session, VM wake, token). Accounts without their own proxy pick a random entry. Proxies are checked every minute; one that fails a check is turned off for 5 minutes and must pass a new check before it is used again.</span>
         </div>
         <div id="proxyPoolStatus" style="font-size: 12px; margin-bottom: 8px;"></div>
         <div id="proxyPoolAccounts" style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;"></div>
@@ -1212,7 +1212,7 @@
             <span id="jobProxyPoolCount" style="font-size: 11px; color: var(--text-dim);"></span>
           </label>
           <textarea id="jobProxyPoolList" class="form-textarea font-mono" rows="6" placeholder="host:port:user:pass&#10;http://user:pass@host:port"></textarea>
-          <span style="font-size: 11px; color: var(--text-dim);">Used for the WebSocket that runs jobs (image / video / chat). Every new connection picks a random entry; an unreachable one is turned off for 30 minutes and another is used. Leave empty to run jobs directly from this server.</span>
+          <span style="font-size: 11px; color: var(--text-dim);">Used for the WebSocket that runs jobs (image / video / chat). Every new connection picks a random entry; proxies are checked every minute; one that fails a check is turned off for 5 minutes (another is used) and must pass a new check before it is used again. Leave empty to run jobs directly from this server.</span>
         </div>
         <div id="jobProxyPoolStatus" style="font-size: 12px; margin-bottom: 8px;"></div>
       </div>
