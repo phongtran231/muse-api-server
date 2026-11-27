@@ -1,34 +1,58 @@
 name: Deploy
 
-# Deploys main to both hosts. Each SSH key is restricted on its server to a forced
-# command (git pull + scripts/deploy-vps.sh), so it cannot open a shell:
-#   deploy       -> VPS_*  (103.116.39.111, /usr/local/bin/muse-deploy)
+# Deploys main to every production host in parallel. All hosts accept the same CI
+# SSH key (secret VPS_SSH_KEY), restricted on each server to a forced command
+# (/usr/local/bin/muse-deploy: git pull + scripts/deploy-vps.sh, which restarts
+# every api node of the host), so the key cannot open a shell.
+#
+#   inmu   inmu.vn91.net   secrets VPS_HOST   / VPS_USER / VPS_KNOWN_HOSTS
+#   muse3  muse3.vn91.net  secrets MUSE3_HOST / (root)   / MUSE3_KNOWN_HOSTS
+#   m1     m1.klink.lol    secrets M1_HOST    / (root)   / M1_KNOWN_HOSTS
+#
+# A host whose HOST secret is not set is skipped with a warning.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
-
 jobs:
   deploy:
+    name: deploy (${{ matrix.target }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: inmu
+            host_secret: VPS_HOST
+            user_secret: VPS_USER
+            known_hosts_secret: VPS_KNOWN_HOSTS
+          - target: muse3
+            host_secret: MUSE3_HOST
+            user_secret: MUSE3_USER
+            known_hosts_secret: MUSE3_KNOWN_HOSTS
+          - target: m1
+            host_secret: M1_HOST
+            user_secret: M1_USER
+            known_hosts_secret: M1_KNOWN_HOSTS
+    concurrency:
+      group: deploy-${{ matrix.target }}
+      cancel-in-progress: false
     steps:
-      - name: Configure SSH
+      - name: Deploy to ${{ matrix.target }}
         env:
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          DEPLOY_KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets[matrix.host_secret] }}
+          USER_NAME: ${{ secrets[matrix.user_secret] }}
+          KNOWN_HOSTS: ${{ secrets[matrix.known_hosts_secret] }}
         run: |
+          if [ -z "$HOST" ] || [ -z "$KNOWN_HOSTS" ]; then
+            echo "::warning::${{ matrix.target }} is not configured (secrets ${{ matrix.host_secret }} / ${{ matrix.known_hosts_secret }}); skipped."
+            exit 0
+          fi
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
-
-      - name: Deploy to VPS
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-        run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes "$VPS_USER@$VPS_HOST" deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes "${USER_NAME:-root}@$HOST" deploy
