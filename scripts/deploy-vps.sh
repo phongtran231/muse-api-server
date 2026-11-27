@@ -32,10 +32,12 @@ done
 
 # Every API node of this host: "api" plus any "api2", "api3"... a host-specific
 # compose override adds (each with its own ACCOUNT_GROUP). They share the image.
+# Rolling restart: one node at a time, each must be healthy before the next goes
+# down, so a multi-node host keeps serving (nginx skips the node being replaced).
 API_SERVICES=$(docker compose config --services | grep -E '^api[0-9]*$' | tr '\n' ' ')
-docker compose up -d $API_SERVICES
 
 for service in $API_SERVICES; do
+  docker compose up -d --no-deps "$service"
   container=$(docker compose ps -q "$service")
   [ "$service" = api ] && [ -z "$container" ] && container=$CONTAINER
   waited=0
