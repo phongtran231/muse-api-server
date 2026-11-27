@@ -1386,3 +1386,23 @@ test('the watchdog never renews an account while it is running a job', async () 
   await pool._autoRecoverUnusableAccounts({ force: true }); // an admin's forced recovery still runs
   assert.deepEqual(renewed.sort(), ['busy', 'idle']);
 });
+
+test('every node picks up proxy list changes saved by another node', async () => {
+  let saved = { value: { proxies: ['http://u:p@10.0.0.1:8080'] } };
+  const { createProxyPool } = isolated('src/services/proxyPool.js', {
+    '../models': { Setting: { findOne: () => ({ lean: async () => saved }), findOneAndUpdate: async () => ({}) } },
+    axios: { get: async () => ({ status: 200 }) },
+    'https-proxy-agent': { HttpsProxyAgent: class {} }
+  }, '', { AbortSignal });
+  const pool = createProxyPool({ settingKey: 't', description: 't', name: 'test' });
+  await pool.load();
+  assert.equal(pool.list().length, 1);
+  assert.equal(await pool.refresh(), false); // unchanged
+  saved = { value: { proxies: ['http://u:p@10.0.0.1:8080', '10.0.0.2:8080:u:p'] } }; // another node saved
+  assert.equal(await pool.refresh(), true);
+  assert.equal(pool.list().length, 2);
+  saved = { value: { proxies: ['10.0.0.2:8080:u:p'] } };
+  assert.equal(await pool.refresh(), true);
+  assert.deepEqual([...pool.list()], ['http://u:p@10.0.0.2:8080']);
+  pool.stop();
+});

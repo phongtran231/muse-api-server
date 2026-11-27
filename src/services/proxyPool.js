@@ -195,11 +195,30 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     checkAll().catch((err) => log.warn({ err: err.message }, 'Proxy health check failed'));
   }
 
+  /**
+   * Re-reads the list saved in the database. Other nodes of the host (and the
+   * dashboard, served by one node) save it, so every node picks changes up here.
+   * Returns true when the list changed.
+   */
+  async function refresh() {
+    const doc = await Setting.findOne({ key: settingKey }).lean();
+    const next = parse(doc?.value?.proxies || []);
+    const same = next.length === proxies.length && next.every((p) => proxies.includes(p));
+    if (same) return false;
+    log.info({ pool: name, before: proxies.length, after: next.length }, `${name} changed in the database; reloaded`);
+    apply(next);
+    return true;
+  }
+
   async function load() {
     const doc = await Setting.findOne({ key: settingKey }).lean();
     apply(parse(doc?.value?.proxies || []));
     if (!timer) {
-      timer = setInterval(() => checkAll().catch(() => {}), CHECK_INTERVAL_MS);
+      timer = setInterval(() => {
+        refresh()
+          .then((changed) => (changed ? null : checkAll()))
+          .catch((err) => log.warn({ pool: name, err: err.message }, 'Proxy pool refresh failed'));
+      }, CHECK_INTERVAL_MS);
       timer.unref?.();
     }
     log.info({ count: proxies.length }, `${name} loaded`);
@@ -235,7 +254,7 @@ function createProxyPool({ settingKey, description, name, onApply = () => {} }) 
     });
   }
 
-  return { load, save, list, status, pick, hasUsable, parse, checkAll, stop, reportFailure };
+  return { load, save, refresh, list, status, pick, hasUsable, parse, checkAll, stop, reportFailure };
 }
 
 const wakePool = createProxyPool({
