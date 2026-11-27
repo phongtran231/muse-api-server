@@ -8,7 +8,6 @@ name: Deploy
 #   inmu   inmu.vn91.net   secrets VPS_HOST   / VPS_USER / VPS_KNOWN_HOSTS
 #   muse3  muse3.vn91.net  secrets MUSE3_HOST / (root)   / MUSE3_KNOWN_HOSTS
 #   m1     m1.klink.lol    secrets M1_HOST    / (root)   / M1_KNOWN_HOSTS
-#   m2     m2.klink.lol    secrets M2_HOST    / (root)   / M2_KNOWN_HOSTS
 #
 # A host whose HOST secret is not set is skipped with a warning.
 on:
@@ -37,10 +36,6 @@ jobs:
             host_secret: M1_HOST
             user_secret: M1_USER
             known_hosts_secret: M1_KNOWN_HOSTS
-          - target: m2
-            host_secret: M2_HOST
-            user_secret: M2_USER
-            known_hosts_secret: M2_KNOWN_HOSTS
     concurrency:
       group: deploy-${{ matrix.target }}
       cancel-in-progress: false
