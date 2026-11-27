@@ -1364,3 +1364,25 @@ test('each node syncs its group from the database: new, removed and edited accou
   assert.deepEqual({ ...(await pool.syncFromDb()) }, { added: 0, removed: 0, changed: 0 }); // nothing changed
   pool.shuttingDown = true;
 });
+
+test('the watchdog never renews an account while it is running a job', async () => {
+  const { AccountPool } = isolated('src/services/pool.js', {
+    '../models': { CAPABILITIES: ['chat', 'image', 'video'], Account: { updateOne: async () => ({}) } }
+  });
+  const pool = new AccountPool();
+  const renewed = [];
+  pool.autoRenewAccount = async (entry) => { renewed.push(entry.id); };
+  const cookie = 'hatch_sess=abc.def; datr=x';
+  const mk = (id, active) => pool.entries.set(id, {
+    id, removed: false, status: 'degraded', failures: 1, cooldownUntil: 0, sleeping: false,
+    client: { ws: { readyState: 1 } }, active: { chat: 0, image: 0, video: active },
+    doc: { enabled: true, name: id, credential: cookie, capabilities: {} }
+  });
+  mk('busy', 1);
+  mk('idle', 0);
+  await pool._autoRecoverUnusableAccounts({ force: false });
+  assert.deepEqual(renewed, ['idle']);
+  renewed.length = 0;
+  await pool._autoRecoverUnusableAccounts({ force: true }); // an admin's forced recovery still runs
+  assert.deepEqual(renewed.sort(), ['busy', 'idle']);
+});

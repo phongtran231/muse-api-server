@@ -1208,6 +1208,10 @@ class AccountPool extends EventEmitter {
       const isUnusable = force || isExpiredOrDegraded || isWssExpiring || isDisconnected;
       if (!isUnusable) continue;
       if (!force && entry.sleeping) continue; // idle VM, woken on demand
+      // Never renew under a running job: renewing opens a second connection to the
+      // same VM and the upstream drops the one the job is using, so the job hangs
+      // until its timeout. Recover the account once its jobs are done.
+      if (!force && (entry.active.chat + entry.active.image + entry.active.video) > 0) continue;
       // The client is already reconnecting on its own; don't race it with a second connection.
       if (!force && !isExpiredOrDegraded && !isWssExpiring && (entry.connecting || entry.reconnectTimer)) continue;
 
