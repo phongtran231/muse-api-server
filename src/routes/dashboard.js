@@ -421,6 +421,21 @@ router.put('/api/job-proxy-pool', async (req, res, next) => {
   }
 });
 
+// Adds proxies that expire (proxy shop tool): { proxies: [{ proxy, created_at, expires_at, source }] }.
+// Expired entries are never used and are removed automatically.
+router.post('/api/job-proxy-pool/add', async (req, res, next) => {
+  try {
+    const entries = (req.body || {}).proxies;
+    if (!Array.isArray(entries) || !entries.length) {
+      throw new ApiError(ErrorCodes.VALIDATION_FAILED, { message: 'proxies must be a non-empty array of { proxy, created_at, expires_at }.' });
+    }
+    const result = await proxyPool.job.add(entries);
+    res.json({ ...result, live: proxyPool.job.status().filter((s) => !s.expired).length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/api/job-proxy-pool/check', async (req, res, next) => {
   try {
     await proxyPool.job.checkAll();

@@ -1406,3 +1406,68 @@ test('every node picks up proxy list changes saved by another node', async () =>
   assert.deepEqual([...pool.list()], ['http://u:p@10.0.0.2:8080']);
   pool.stop();
 });
+
+test('proxies added with an expiry are never picked once expired and are dropped on every node', async () => {
+  // Minimal in-memory settings collection with the update operators the pool uses.
+  const docs = new Map();
+  const norm = (u) => u;
+  const Setting = {
+    findOne: (q) => ({ lean: async () => (docs.has(q.key) ? JSON.parse(JSON.stringify(docs.get(q.key))) : null) }),
+    findOneAndUpdate: async (q, u, o) => { const d = docs.get(q.key) || { key: q.key }; Object.assign(d, u.$set || {}); docs.set(q.key, d); return d; },
+    updateOne: async (q, u, o = {}) => {
+      let d = docs.get(q.key);
+      if (!d) { if (!o.upsert) return { matchedCount: 0 }; d = { key: q.key, ...(u.$setOnInsert || {}) }; docs.set(q.key, d); }
+      d.value = d.value || {};
+      d.value.proxies = d.value.proxies || [];
+      d.value.meta = d.value.meta || [];
+      if (u.$pull) {
+        const pp = u.$pull['value.proxies'];
+        if (pp) d.value.proxies = d.value.proxies.filter((x) => !pp.$in.includes(x));
+        const pm = u.$pull['value.meta'];
+        if (pm) d.value.meta = d.value.meta.filter((m) => !pm.proxy.$in.includes(m.proxy));
+      }
+      if (u.$addToSet) for (const x of u.$addToSet['value.proxies'].$each) if (!d.value.proxies.includes(x)) d.value.proxies.push(norm(x));
+      if (u.$push) d.value.meta.push(...u.$push['value.meta'].$each);
+      return { matchedCount: 1 };
+    }
+  };
+  let offset = 0;
+  class FakeDate extends Date { static now() { return Date.now() + offset; } }
+  const mk = () => isolated('src/services/proxyPool.js', {
+    '../models': { Setting },
+    axios: { get: async () => ({ status: 200 }) },
+    'https-proxy-agent': { HttpsProxyAgent: class {} }
+  }, '', { AbortSignal, Date: FakeDate }).createProxyPool({ settingKey: 'job', description: 'job', name: 'test' });
+  const node1 = mk();
+  const node2 = mk();
+  await node1.save('10.0.0.9:8080:u:p'); // pasted on the dashboard: never expires
+  await node1.load();
+  await node2.load();
+  const now = Date.now();
+  const day = 24 * 3600e3;
+  const res = await node1.add([
+    { proxy: '10.0.0.1:8080:u:p', created_at: new Date(now).toISOString(), expires_at: new Date(now + day - 15 * 60e3).toISOString() },
+    { proxy: '10.0.0.2:8080:u:p', created_at: new Date(now - day).toISOString(), expires_at: new Date(now + 60e3).toISOString() },
+    { proxy: '10.0.0.3:8080:u:p', created_at: new Date(now - 2 * day).toISOString(), expires_at: new Date(now - 1000).toISOString() } // already expired: refused
+  ]);
+  assert.equal(res.added, 2);
+  assert.equal(node1.list().length, 3);
+  await node2.refresh();
+  assert.equal(node2.list().length, 3); // the other node sees them
+  // 2 minutes later the second proxy expired: never picked, then dropped from the stored list.
+  offset = 2 * 60e3;
+  for (let i = 0; i < 50; i++) assert.notEqual(node2.pick(), 'http://u:p@10.0.0.2:8080');
+  assert.equal(await node2.purgeExpired(), 1);
+  assert.equal(JSON.stringify([...docs.get('job').value.proxies].sort()), JSON.stringify(['http://u:p@10.0.0.1:8080', 'http://u:p@10.0.0.9:8080']));
+  await node1.refresh();
+  assert.equal(node1.list().length, 2);
+  // Re-adding a proxy updates its dates instead of duplicating it.
+  await node1.add([{ proxy: '10.0.0.1:8080:u:p', created_at: new Date(now).toISOString(), expires_at: new Date(now + 2 * day).toISOString() }]);
+  assert.equal(docs.get('job').value.meta.filter((m) => m.proxy === 'http://u:p@10.0.0.1:8080').length, 1);
+  // Editing the plain list on the dashboard keeps the expiry of entries that stay.
+  await node1.save('10.0.0.1:8080:u:p\n10.0.0.5:8080:u:p');
+  assert.equal(docs.get('job').value.meta.length, 1);
+  const st = node1.status().find((x) => x.proxy.startsWith('10.0.0.1'));
+  assert.ok(st.expires_at && st.expired === false);
+  node1.stop(); node2.stop();
+});
