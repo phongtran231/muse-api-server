@@ -21,6 +21,7 @@ const { requireDashboardAuth } = require('../middleware/dashboardAuth');
 const { serializeAccount, serializeApiKey, serializeJob } = require('../serializers');
 const { onboardAccount } = require('../services/accounts');
 const accountImport = require('../services/accountImport');
+const accountCleanup = require('../services/accountCleanup');
 const proxyPool = require('../services/proxyPool');
 const { logger, sanitize } = require('../logger');
 const { ApiError, ErrorCodes } = require('../errors');
@@ -453,6 +454,25 @@ router.post('/api/proxy-pool/assign-all', async (req, res, next) => {
     await Account.updateMany({ _id: { $in: accounts.map((a) => a._id) } }, { $set: { proxy: 'pool' } });
     for (const a of accounts) await pool.reload(a._id).catch(() => {});
     res.json({ updated: accounts.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Daily removal of accounts with a dead cookie: status / manual run (dry_run lists only).
+router.get('/api/account-cleanup', async (req, res, next) => {
+  try {
+    res.json(await accountCleanup.status());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/api/account-cleanup/run', async (req, res, next) => {
+  try {
+    const dryRun = (req.body || {}).dry_run !== false;
+    const result = await accountCleanup.runCleanup({ dryRun });
+    res.json(result);
   } catch (err) {
     next(err);
   }

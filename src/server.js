@@ -29,6 +29,7 @@ const { startUsageFlusher, stopUsageFlusher } = require('./services/usage');
 const { startMaintenance, stopMaintenance } = require('./services/maintenance');
 const { createApp } = require('./app');
 const { startAccountImport, stopAccountImport } = require('./services/accountImport');
+const { startAccountCleanup, stopAccountCleanup } = require('./services/accountCleanup');
 const { Setting } = require('./models');
 
 const log = logger.child({ component: 'server' });
@@ -50,6 +51,7 @@ async function main() {
   dispatcher.start();
   startUsageFlusher();
   startMaintenance();
+  startAccountCleanup();
   await startAccountImport().catch((err) => log.error({ err: err.message }, 'Bulk account import failed to start'));
 
   const app = createApp();
@@ -84,6 +86,7 @@ async function main() {
 
     await dispatcher.stop(config.server.shutdownGraceMs);
     stopMaintenance();
+    stopAccountCleanup();
     proxyPool.stop();
     proxyPool.job.stop();
     await stopAccountImport();

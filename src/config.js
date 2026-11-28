@@ -266,6 +266,12 @@ const config = Object.freeze({
     url: str('REDIS_URL', '')
   }),
 
+  // Daily removal of accounts whose cookie Meta rejects (services/accountCleanup).
+  accountCleanup: Object.freeze({
+    enabled: bool('ACCOUNT_CLEANUP_ENABLED', false),
+    intervalHours: int('ACCOUNT_CLEANUP_INTERVAL_HOURS', 24, { min: 1, max: 168 })
+  }),
+
   accountImport: Object.freeze({
     // Pause between two imported accounts, so a batch does not burst requests to Meta.
     intervalMs: int('ACCOUNT_IMPORT_INTERVAL_SEC', 20, { min: 0, max: 3600 }) * 1000,

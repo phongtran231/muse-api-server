@@ -1471,3 +1471,62 @@ test('proxies added with an expiry are never picked once expired and are dropped
   assert.ok(st.expires_at && st.expired === false);
   node1.stop(); node2.stop();
 });
+
+test('daily account cleanup deletes only accounts Meta still rejects (401), once per interval', async () => {
+  const accounts = new Map([
+    ['dead', { _id: 'dead', name: 'dead', status: 'expired', last_error: { code: 'upstream_auth_failed' }, credential: 'hatch_sess=a.b' }],
+    ['alive', { _id: 'alive', name: 'alive', status: 'expired', last_error: { code: 'upstream_auth_failed' }, credential: 'hatch_sess=c.d' }],
+    ['flaky', { _id: 'flaky', name: 'flaky', status: 'expired', last_error: { code: 'upstream_auth_failed' }, credential: 'hatch_sess=e.f' }]
+  ]);
+  const removed = [];
+  const settings = new Map();
+  const matches = (d, f) => d.status === f.status && d.last_error?.code === f['last_error.code'] && (!f._id || d._id === f._id);
+  const mod = isolated('src/services/accountCleanup.js', {
+    '../config': { ...config, server: { nodeId: 'n1' }, accountCleanup: { enabled: true, intervalHours: 24 } },
+    '../models': {
+      Account: {
+        find: (f) => ({ select: () => ({ lean: async () => [...accounts.values()].filter((d) => matches(d, f)) }) }),
+        deleteOne: async (f) => { const d = accounts.get(f._id); if (d && matches(d, f)) { accounts.delete(f._id); return { deletedCount: 1 }; } return { deletedCount: 0 }; },
+        countDocuments: async (f) => [...accounts.values()].filter((d) => matches(d, f)).length
+      },
+      Setting: {
+        findOne: () => ({ lean: async () => settings.get('account_cleanup') || null }),
+        updateOne: async () => ({}),
+        findOneAndUpdate: (q, u) => ({
+          lean: async () => {
+            const cur = settings.get(q.key);
+            const last = cur?.value?.last_run_at;
+            const due = q.$or[0]['value.last_run_at'].$lt;
+            if (cur && last && !(last < due)) { const e = new Error('dup'); e.code = 11000; throw e; }
+            const next = { key: q.key, value: { ...(cur?.value || {}), last_run_at: u.$set['value.last_run_at'] } };
+            settings.set(q.key, next);
+            return next;
+          }
+        })
+      }
+    },
+    './proxyPool': { pick: () => null },
+    './pool': { pool: { remove: (id) => removed.push(id) } }
+  }, '', { AbortSignal });
+
+  // checkCookie: 401 dead, 200 alive, network error unknown
+  const get = (status) => async () => ({ status });
+  assert.equal((await mod.checkCookie('hatch_sess=x.y', { httpGet: get(401), pickProxy: () => null })).verdict, 'dead');
+  assert.equal((await mod.checkCookie('hatch_sess=x.y', { httpGet: get(200), pickProxy: () => null })).verdict, 'alive');
+  assert.equal((await mod.checkCookie('hatch_sess=x.y', { httpGet: async () => { throw Object.assign(new Error('t'), { code: 'ETIMEDOUT' }); }, pickProxy: () => null })).verdict, 'unknown');
+
+  const check = async (cred) => ({ verdict: cred.includes('a.b') ? 'dead' : cred.includes('c.d') ? 'alive' : 'unknown', detail: '' });
+  const dry = await mod.runCleanup({ dryRun: true, check });
+  assert.equal(dry.dead, 1);
+  assert.equal(accounts.size, 3); // dry run deletes nothing
+  const real = await mod.runCleanup({ dryRun: false, check });
+  assert.equal(JSON.stringify(real.deleted.map((d) => d.id)), JSON.stringify(['dead']));
+  assert.deepEqual(removed, ['dead']);
+  assert.deepEqual([...accounts.keys()].sort(), ['alive', 'flaky']);
+
+  // Only one node claims the run per interval.
+  const now = Date.now();
+  assert.equal(await mod.claimRun(now), true);
+  assert.equal(await mod.claimRun(now + 60e3), false);
+  assert.equal(await mod.claimRun(now + 25 * 3600e3), true);
+});
